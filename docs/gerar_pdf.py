@@ -64,14 +64,15 @@ PADRAO = {
     "ip_publico": "IP_PUBLICO_DA_VM",
     "data": "",
     "azure": {
-        "regiao": "Brazil South",
+        "regiao": "Canada Central",
+        "regiao_grupo": "Brazil South",
         "grupo_recursos": "rg-api-tarefas",
         "vm_nome": "vm-gs",
-        "sku": "Standard_B1s",
-        "vcpu": "1",
+        "sku": "Standard_B2ats_v2",
+        "vcpu": "2",
         "ram": "1 GiB",
         "imagem": "Ubuntu Server 22.04 LTS",
-        "disco": "Standard SSD (StandardSSD_LRS), 30 GiB",
+        "disco": "Premium SSD (Premium_LRS), 30 GiB",
     },
 }
 
@@ -79,11 +80,11 @@ EVIDENCIAS = [
     ("01", "Grupo de recursos na Azure",
      "Portal Azure > Grupos de recursos > rg-api-tarefas, mostrando todos os recursos criados (VM, disco, IP, NSG, rede)."),
     ("02", "Visão geral da máquina virtual",
-     "Página Visão geral da VM: região, tamanho (SKU Standard_B1s), sistema operacional, IP público e status Em execução."),
+     "Página Visão geral da VM: região, tamanho (SKU Standard_B2ats_v2), sistema operacional, IP público e status Em execução."),
     ("03", "Regras de entrada do NSG",
      "VM > Rede (ou o NSG) > Regras de porta de entrada, mostrando a porta 22 (SSH) e a porta 80 (HTTP)."),
     ("04", "Disco do sistema operacional",
-     "VM > Discos: tipo Standard SSD e tamanho de 30 GiB."),
+     "VM > Discos: tipo Premium SSD (LRS) e tamanho de 30 GiB."),
     ("05", "Configuração da VM via SSH",
      "Terminal executando deploy/setup-vm.sh dentro da VM, até a última linha com o retorno do /health."),
     ("06", "Serviço ativo no systemd",
@@ -476,36 +477,42 @@ def conteudo():
     st.append(P("5.1 Resumo dos recursos", "h2"))
     st += tabela([
         ["Recurso Azure", "Configuração usada", "Função"],
-        ["Grupo de recursos", f"{az['grupo_recursos']} ({az['regiao']})", "Agrupa todos os recursos; apagar o grupo remove tudo."],
+        ["Grupo de recursos", f"{az['grupo_recursos']} (metadados em {az['regiao_grupo']}; recursos em {az['regiao']})", "Agrupa todos os recursos; apagar o grupo remove tudo."],
         ["Máquina virtual", f"{az['vm_nome']} · SKU {az['sku']} · {az['vcpu']} vCPU · {az['ram']} de RAM · {az['imagem']}",
          "Executa o gunicorn, o Flask e o SQLite."],
         ["Armazenamento (disco gerenciado do SO)", az["disco"], "Guarda o sistema, o código, o ambiente Python e o arquivo do banco."],
         ["IP público", "SKU Standard (endereço estático)", "Endereço de acesso à API pela internet."],
         ["NSG (grupo de segurança de rede)", "Entrada liberada: 22/TCP (SSH) e 80/TCP (HTTP)", "Firewall da interface de rede da VM."],
-        ["Rede virtual, sub-rede e NIC", "Criadas automaticamente pelo az vm create", "Conectividade da VM."],
+        ["Rede virtual, sub-rede e NIC", "Criadas automaticamente junto com a VM", "Conectividade da VM."],
     ], [4.0 * cm, 6.8 * cm, LARGURA - 10.8 * cm])
 
     st.append(P("5.2 Máquina virtual e SKU", "h2"))
     st.append(P(
         f"<b>SKU</b> é o código do produto que define o tamanho da máquina. Aqui foi usado "
         f"<b>{az['sku']}</b>, que se lê assim: <i>Standard</i> (categoria padrão), <i>B</i> (série "
-        "burstable, de desempenho com picos), <i>1</i> (um vCPU) e <i>s</i> (aceita discos Premium SSD). "
-        f"Esse tamanho oferece {az['vcpu']} vCPU e {az['ram']} de memória."))
+        "burstable, de desempenho com picos), <i>2</i> (dois vCPUs), <i>a</i> (processador AMD), "
+        "<i>t</i> (tiny memory: a menor proporção de memória por vCPU), <i>s</i> (aceita discos Premium SSD) "
+        f"e <i>v2</i> (segunda geração da série). Esse tamanho oferece {az['vcpu']} vCPUs e {az['ram']} de memória."))
+    st.append(P(
+        "O tamanho inicialmente planejado era o Standard_B1s em Brazil South, mas a assinatura usada "
+        "retornou o erro SkuNotAvailable (restrição de capacidade) para ele nessa região. Por isso a VM "
+        f"foi criada em <b>{az['regiao']}</b>, com o {az['sku']}. O grupo de recursos continua com os "
+        f"metadados em {az['regiao_grupo']}, o que não afeta o funcionamento."))
     st.append(P(
         "A série B acumula créditos de CPU enquanto a VM trabalha abaixo do seu desempenho base e pode "
         "usar até 100% da vCPU em momentos de pico. Isso combina com uma API de poucas requisições, que "
         "fica ociosa na maior parte do tempo, e é a opção de menor custo para a atividade."))
     st.append(P(
         "Segundo a página de serviços gratuitos da Microsoft, contas novas da Azure recebem 750 horas "
-        "por mês de VMs B1s por 12 meses. Se o SKU estiver indisponível na região ou na assinatura "
-        "(o que o comando az vm list-skus mostra), basta trocar a região ou o tamanho no script e na "
-        "configuração deste documento."))
+        "por mês de cada um dos tamanhos B1s, B2pts v2 e B2ats v2, por 12 meses (oferta para contas "
+        "elegíveis). O tamanho usado aqui, B2ats v2, está nessa lista."))
 
     st.append(P("5.3 Armazenamento", "h2"))
     st += bullets([
-        f"<b>Disco do sistema operacional</b>: disco gerenciado {az['disco']}. Standard SSD usa redundância "
-        "local (LRS), com três cópias dentro do mesmo datacenter, e atende bem a uma carga leve. Como o "
-        "tamanho B1s aceita Premium SSD, seria possível trocar o tipo caso a aplicação crescesse.",
+        f"<b>Disco do sistema operacional</b>: disco gerenciado {az['disco']}. O tipo Premium SSD foi o padrão sugerido pelo portal para este tamanho "
+        "(a letra <i>s</i> do SKU indica suporte a discos Premium). A redundância é local (LRS), com três "
+        "cópias dentro do mesmo datacenter. Para reduzir custo seria possível trocar para Standard SSD, que "
+        "também atenderia a uma carga leve como esta.",
         "<b>Onde fica o banco</b>: o arquivo <font name='Courier'>/var/lib/api-tarefas/tarefas.db</font> "
         "está nesse disco persistente. A VM também costuma ter um disco temporário local, que "
         "<b>não</b> é persistente e por isso não é usado para o banco.",
@@ -519,8 +526,8 @@ def conteudo():
     st.append(P("5.4 Rede e segurança", "h2"))
     st += tabela([
         ["Porta", "Protocolo", "Origem", "Como foi criada", "Motivo"],
-        ["22", "TCP (SSH)", "Qualquer", "Padrão do az vm create (Linux)", "Administração da VM por chave SSH."],
-        ["80", "TCP (HTTP)", "Qualquer", "az vm open-port --port 80", "Acesso público à API."],
+        ["22", "TCP (SSH)", "Qualquer", "Marcada na criação da VM", "Administração remota da VM por SSH."],
+        ["80", "TCP (HTTP)", "Qualquer", "Marcada na criação da VM", "Acesso público à API."],
         ["Demais", "-", "-", "Regras padrão do NSG", "Entrada negada."],
     ], [1.6 * cm, 2.4 * cm, 2.0 * cm, 5.2 * cm, LARGURA - 11.2 * cm])
     st.append(P(
@@ -561,12 +568,25 @@ def conteudo():
     # 7 ---------------------------------------------------------------
     st.append(P("7. Deploy passo a passo", "h1"))
     st.append(figura(os.path.join(DIAG, "04-deploy.png"), "Sequência do deploy, da criação da VM ao serviço no ar.", alt_max=8.5 * cm))
-    st.append(P("7.1 Infraestrutura (deploy/azure-cli.sh)", "h2"))
+    st.append(P("7.1 Criação da VM no portal da Azure", "h2"))
+    st += tabela([
+        ["Campo", "Valor usado"],
+        ["Grupo de recursos", az["grupo_recursos"]],
+        ["Nome da máquina virtual", az["vm_nome"]],
+        ["Região", az["regiao"]],
+        ["Imagem", az["imagem"]],
+        ["Tamanho (SKU)", f"{az['sku']} ({az['vcpu']} vCPUs, {az['ram']})"],
+        ["Usuário administrador", "azureuser (mesmo usuário definido no serviço systemd)"],
+        ["Autenticação SSH", "Senha"],
+        ["Portas de entrada públicas", "SSH (22) e HTTP (80)"],
+        ["Disco do sistema operacional", az["disco"]],
+    ], [5.2 * cm, LARGURA - 5.2 * cm])
+    st.append(P("7.1.1 Equivalente por linha de comando (deploy/azure-cli.sh)", "h2"))
     st += codigo(
-        f"az group create --name {AZ['grupo_recursos']} --location brazilsouth\n"
+        f"az group create --name {AZ['grupo_recursos']} --location {AZ['regiao'].lower().replace(' ', '')}\n"
         f"az vm create --resource-group {AZ['grupo_recursos']} --name {AZ['vm_nome']} \\\n"
         f"   --image Ubuntu2204 --size {AZ['sku']} --admin-username azureuser --generate-ssh-keys \\\n"
-        "   --storage-sku StandardSSD_LRS --os-disk-size-gb 30 --public-ip-sku Standard\n"
+        "   --storage-sku Premium_LRS --os-disk-size-gb 30 --public-ip-sku Standard\n"
         f"az vm open-port --resource-group {AZ['grupo_recursos']} --name {AZ['vm_nome']} --port 80 --priority 900\n"
         f"az vm show -d --resource-group {AZ['grupo_recursos']} --name {AZ['vm_nome']} --query publicIps -o tsv")
     st.append(P("7.2 Configuração da VM (deploy/setup-vm.sh)", "h2"))
@@ -621,7 +641,7 @@ def segunda_parte():
     st += tabela([
         ["Ponto", "Situação atual", "Melhoria sugerida"],
         ["Tráfego HTTP", "Sem criptografia (porta 80)", "Colocar nginx como proxy reverso com certificado Let's Encrypt (HTTPS)."],
-        ["Acesso SSH", "Porta 22 aberta para a internet, só com chave", "Restringir a origem ao IP do administrador no NSG ou usar o Azure Bastion."],
+        ["Acesso SSH", "Porta 22 aberta para a internet, com login do usuário azureuser", "Restringir a origem ao IP do administrador no NSG, usar chave SSH em vez de senha ou usar o Azure Bastion."],
         ["Autenticação da API", "Rotas públicas, sem login", "Chave de API ou token (JWT) nas rotas de escrita."],
         ["Banco SQLite", "Uma gravação por vez; arquivo em um único disco", "Backup por snapshot ou cópia para Blob; migrar para PostgreSQL/Azure SQL se crescer."],
         ["Disponibilidade", "Uma única VM", "Zonas de disponibilidade e balanceador, o que exigiria banco em serviço gerenciado."],
@@ -693,7 +713,6 @@ def main():
         st_cap.insert(-1, NextPageTemplate("miolo"))
         story = st_cap + conteudo()
 
-        story.append(PageBreak())
         story.append(P("8. Evidências (prints de tela)", "h1"))
         story.append(P(
             "Cada print abaixo recebe, automaticamente, a marca d'água com o nome do aluno, a expressão "
@@ -712,7 +731,7 @@ def main():
                         os.path.getmtime(arq)).strftime("%d/%m/%Y")
                     destino = os.path.join(tmp, f"{ident}-{i}.jpg")
                     aplicar_marca_dagua(arq, destino, data_txt)
-                    bloco += figura_itens(destino, e(titulo) + ".", alt_max=12 * cm)
+                    bloco += figura_itens(destino, e(titulo) + ".", alt_max=8.6 * cm)
             story.append(KeepTogether(bloco))
 
         story += segunda_parte()

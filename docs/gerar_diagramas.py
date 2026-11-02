@@ -1,4 +1,5 @@
 """Gera os diagramas PNG da documentacao (docs/diagramas/)."""
+import json
 import os
 
 import matplotlib
@@ -7,7 +8,17 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch
 
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "diagramas")
+AQUI = os.path.dirname(os.path.abspath(__file__))
+OUT = os.path.join(AQUI, "diagramas")
+try:
+    with open(os.path.join(AQUI, "config.json"), encoding="utf-8") as _f:
+        AZ = json.load(_f)["azure"]
+except Exception:
+    AZ = {}
+REGIAO = AZ.get("regiao", "Canada Central")
+SKU = AZ.get("sku", "Standard_B2ats_v2")
+VMNOME = AZ.get("vm_nome", "vm-gs")
+GRUPO = AZ.get("grupo_recursos", "rg-api-tarefas")
 os.makedirs(OUT, exist_ok=True)
 
 AZUL = "#1f4e79"
@@ -67,20 +78,20 @@ def arquitetura():
     caixa(ax, 2, 55, 18, 9, "GitHub\n(repositório)", fc=CINZA_CLARO, ec=CINZA)
 
     caixa(ax, 25, 3, 92, 63, "", fc="white", ec=AZUL, ls="--", lw=1.4)
-    ax.text(115, 62.5, "Azure · Brazil South · grupo de recursos rg-api-tarefas",
+    ax.text(115, 62.5, f"Azure · {REGIAO} · grupo de recursos {GRUPO}",
             ha="right", va="center", fontsize=9.5, color=AZUL, fontweight="bold")
 
     caixa(ax, 28, 29, 14, 10, "IP público\n(SKU Standard)", fc=LARANJA_CLARO, ec="#c55a11", size=9)
     caixa(ax, 45, 29, 14, 10, "NSG\nporta 80 (HTTP)\nporta 22 (SSH)", fc=LARANJA_CLARO, ec="#c55a11", size=8.5)
 
     caixa(ax, 63, 13, 52, 43, "", fc="white", ec=AZUL, lw=1.8)
-    ax.text(89, 53, "VM vm-gs · Standard_B1s · Ubuntu 22.04",
+    ax.text(89, 53, f"VM {VMNOME} · {SKU} · Ubuntu 22.04",
             ha="center", va="center", fontsize=9.5, fontweight="bold", color=AZUL)
     caixa(ax, 67, 38, 44, 9, "gunicorn (2 workers) · porta 80\nsystemd: api-tarefas.service", fc=VERDE_CLARO, ec="#548235", size=9)
     caixa(ax, 67, 26, 44, 8, "Flask · app.py (rotas REST)", fc=VERDE_CLARO, ec="#548235", size=9)
     caixa(ax, 67, 15, 44, 7, "SQLite · /var/lib/api-tarefas/tarefas.db", fc=VERDE_CLARO, ec="#548235", size=9)
 
-    caixa(ax, 63, 4.5, 52, 5, "Disco de SO · Standard SSD · 30 GiB", fc=AZUL_CLARO, ec=AZUL, size=9)
+    caixa(ax, 63, 4.5, 52, 5, "Disco de SO · Premium SSD · 30 GiB", fc=AZUL_CLARO, ec=AZUL, size=9)
 
     seta(ax, (17.4, 34), (27.6, 34), "HTTP :80", dy=2.2, size=8.5)
     seta(ax, (42.4, 34), (44.6, 34))
@@ -158,9 +169,9 @@ def deploy():
     fig, ax = nova_figura(12, 5.2, 120, 52)
     ax.text(60, 49.5, "Passo a passo do deploy", ha="center", fontsize=13, fontweight="bold", color=AZUL)
     passos = [
-        ("1. Grupo de recursos", "az group create\nbrazilsouth"),
-        ("2. Máquina virtual", "az vm create\nStandard_B1s · Ubuntu 22.04"),
-        ("3. Rede", "az vm open-port\nporta 80 na NSG"),
+        ("1. Grupo de recursos", f"{GRUPO}\n(portal ou az group create)"),
+        ("2. Máquina virtual", f"portal Azure\n{SKU} · Ubuntu 22.04"),
+        ("3. Rede", "NSG: portas 22 e 80\n(marcadas na criação)"),
         ("4. Acesso e código", "ssh azureuser@IP\ngit clone do GitHub"),
         ("5. Ambiente Python", "python3 -m venv\npip install -r requirements.txt"),
         ("6. Serviço", "systemd + gunicorn\nenable --now api-tarefas"),
@@ -170,7 +181,7 @@ def deploy():
     for (titulo, det), (x, y) in zip(passos, pos):
         caixa(ax, x, y, 32, 15, "", fc=AZUL_CLARO, ec=AZUL)
         ax.text(x + 16, y + 11, titulo, ha="center", va="center", fontsize=10.5, fontweight="bold", color=AZUL)
-        ax.text(x + 16, y + 5, det, ha="center", va="center", fontsize=9, family="monospace", color="#111111")
+        ax.text(x + 16, y + 5, det, ha="center", va="center", fontsize=8.6, family="monospace", color="#111111")
     seta(ax, (37.6, 34.5), (43.4, 34.5), dy=0)
     seta(ax, (76.6, 34.5), (82.4, 34.5), dy=0)
     seta(ax, (99, 26.4), (99, 20.6), dy=0)

@@ -10,9 +10,9 @@ Atividade de Cloud — FIAP, Prof. Eduardo Popovici.
 ## Arquitetura
 
 ```
-Cliente (curl / navegador) --HTTP:80--> NSG (porta 80) --> VM Ubuntu 22.04 (Standard_B1s)
+Cliente (curl / navegador) --HTTP:80--> NSG (porta 80) --> VM Ubuntu 22.04 (Standard_B2ats_v2, Canada Central)
                                                            gunicorn (2 workers) --> Flask --> SQLite (/var/lib/api-tarefas/tarefas.db)
-                                                           disco de SO Standard SSD 30 GiB
+                                                           disco de SO Premium SSD 30 GiB
 ```
 
 Diagramas em `docs/diagramas/`.
@@ -55,7 +55,7 @@ curl -X DELETE http://127.0.0.1:5000/tarefas/1
 ## Deploy na Azure
 
 1. **Infraestrutura** (Azure Cloud Shell ou `az` logado): `bash deploy/azure-cli.sh`
-   Cria o grupo de recursos, a VM `Standard_B1s` (Ubuntu 22.04, disco Standard SSD 30 GiB, IP público) e abre a porta 80.
+   Cria o grupo de recursos, a VM `Standard_B2ats_v2` em Canada Central (Ubuntu 22.04, disco Premium SSD 30 GiB, IP público) e abre a porta 80.
 2. **Código no GitHub**: https://github.com/vlongo404/GS-cloud (repositório **público**, para a VM clonar sem credenciais).
 3. **Configurar a VM**: `ssh azureuser@<IP_PUBLICO>` e rodar
    `curl -O https://raw.githubusercontent.com/vlongo404/GS-cloud/main/deploy/setup-vm.sh && bash setup-vm.sh https://github.com/vlongo404/GS-cloud.git`

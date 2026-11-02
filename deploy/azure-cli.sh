@@ -3,9 +3,9 @@
 set -euo pipefail
 
 RG="rg-api-tarefas"
-LOCATION="brazilsouth"
+LOCATION="canadacentral"
 VM="vm-gs"
-SIZE="Standard_B1s"
+SIZE="Standard_B2ats_v2"
 
 # 0) (opcional) confira se o SKU esta disponivel na sua assinatura/regiao:
 #    az vm list-skus -l "$LOCATION" --size "$SIZE" -o table
@@ -14,7 +14,7 @@ SIZE="Standard_B1s"
 # 1) Grupo de recursos
 az group create --name "$RG" --location "$LOCATION"
 
-# 2) VM Ubuntu 22.04 com disco de SO Standard SSD de 30 GiB e IP publico
+# 2) VM Ubuntu 22.04 com disco de SO Premium SSD de 30 GiB e IP publico
 az vm create \
   --resource-group "$RG" \
   --name "$VM" \
@@ -22,7 +22,7 @@ az vm create \
   --size "$SIZE" \
   --admin-username azureuser \
   --generate-ssh-keys \
-  --storage-sku StandardSSD_LRS \
+  --storage-sku Premium_LRS \
   --os-disk-size-gb 30 \
   --public-ip-sku Standard
 
