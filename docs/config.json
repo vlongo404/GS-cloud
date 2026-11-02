@@ -1,0 +1,20 @@
+{
+  "aluno": "Victor Marcolongo Pereira",
+  "rm": "",
+  "turma": "2TDCPR",
+  "disciplina": "Defesa Cibernética & Cloud",
+  "professor": "Prof. Eduardo Popovici",
+  "repo_url": "https://github.com/vlongo404/GS-cloud",
+  "ip_publico": "IP_PUBLICO_DA_VM",
+  "data": "",
+  "azure": {
+    "regiao": "Brazil South",
+    "grupo_recursos": "rg-api-tarefas",
+    "vm_nome": "vm-gs",
+    "sku": "Standard_B1s",
+    "vcpu": "1",
+    "ram": "1 GiB",
+    "imagem": "Ubuntu Server 22.04 LTS",
+    "disco": "Standard SSD (StandardSSD_LRS), 30 GiB"
+  }
+}
