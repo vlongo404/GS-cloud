@@ -150,7 +150,7 @@ def carregar_fonte(tamanho):
 
 
 def aplicar_marca_dagua(origem, destino, data_txt):
-    texto = f"{CFG['aluno']} · Evidência Original · {data_txt}"
+    texto = f"{CFG['aluno']} · Evidência Original"
     img = Image.open(origem).convert("RGB")
     if img.width > 1800:
         nova_altura = int(img.height * 1800 / img.width)
@@ -715,8 +715,8 @@ def main():
 
         story.append(P("8. Evidências (prints de tela)", "h1"))
         story.append(P(
-            "Cada print abaixo recebe, automaticamente, a marca d'água com o nome do aluno, a expressão "
-            "\"Evidência Original\" e a data. Os arquivos originais ficam intactos em docs/prints."))
+            "Cada print abaixo recebe, automaticamente, a marca d'água com o nome do aluno e a expressão "
+            "\"Evidência Original\". Os arquivos originais ficam intactos em docs/prints."))
         encontrados = 0
         for ident, titulo, o_que in EVIDENCIAS:
             bloco = [P(f"8.{int(ident)} {e(titulo)}", "h2")]
