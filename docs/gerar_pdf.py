@@ -132,7 +132,10 @@ EVIDENCIAS = [
      "GET /tarefas devolve a tarefa recém-gravada, o que confirma a persistência no banco."),
     ("10", "Atualizando e removendo (PUT e DELETE)",
      "O PUT altera concluida para true, o DELETE responde 204 e a consulta seguinte retorna 404."),
-    ("11", "Repositório no GitHub",
+    ("11", "Banco SQLite na VM",
+     "O arquivo tarefas.db existe em /var/lib/api-tarefas e a tabela tarefas guarda a tarefa criada pela API "
+     "(consulta direta com sqlite3)."),
+    ("12", "Repositório no GitHub",
      "O código está em um repositório público do GitHub, com as pastas deploy, docs e tests."),
 ]
 
@@ -1160,7 +1163,8 @@ def conteudo():
     st.append(P(
         "O SQLite é um banco relacional embutido: todo o banco é um único arquivo, acessado pelo módulo "
         "sqlite3 do Python, sem processo de servidor. A tabela é criada automaticamente na "
-        "primeira execução da aplicação (CREATE TABLE IF NOT EXISTS)."))
+        "primeira execução da aplicação (CREATE TABLE IF NOT EXISTS). A evidência 11 mostra o arquivo "
+        "do banco na VM e a tarefa gravada nele."))
     st.append(figura(os.path.join(DIAG, "03-modelo-dados.png"), "Modelo de dados: tabela tarefas.", alt_max=7 * cm))
     st += codigo(
         "CREATE TABLE IF NOT EXISTS tarefas (\n"
@@ -1249,7 +1253,7 @@ def segunda_parte():
     st.append(P(
         "Depois do deploy, os testes manuais são feitos de fora da VM, apontando para o IP público "
         f"(<font name='Courier'>http://{e(CFG['ip_publico'])}</font>). Os resultados estão nas "
-        "evidências 7 a 10 da seção 8."))
+        "evidências 7 a 11 da seção 8."))
 
     st.append(P("10. Segurança, limitações e melhorias", "h1"))
     st += tabela([
