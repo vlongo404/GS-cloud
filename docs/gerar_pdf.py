@@ -665,7 +665,7 @@ def segunda_parte():
         "    gerar_pdf.py          Gera este PDF\n"
         "    config.json           Dados do aluno, repositório e configuração da Azure\n"
         "    diagramas/            Imagens dos esquemas visuais\n"
-        "    prints/               Prints de evidência (originais)")
+        "    prints/               Prints de evidência (só na entrega do PDF)")
     st.append(P("Referências", "h2"))
     st += bullets([
         "Microsoft Learn - Série Bv1 de VMs: https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/general-purpose/bv1-series",
