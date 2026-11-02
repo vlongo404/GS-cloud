@@ -21,12 +21,22 @@ VMNOME = AZ.get("vm_nome", "vm-gs")
 GRUPO = AZ.get("grupo_recursos", "rg-api-tarefas")
 os.makedirs(OUT, exist_ok=True)
 
-AZUL = "#1f4e79"
-AZUL_CLARO = "#dbe9f6"
-VERDE_CLARO = "#e2f0d9"
-LARANJA_CLARO = "#fde9d3"
-CINZA_CLARO = "#eeeeee"
-CINZA = "#555555"
+from matplotlib import font_manager as _fm
+
+_FONTES = os.path.join(AQUI, "fonts")
+if os.path.isdir(_FONTES):
+    for _f in ("Inter-Regular.ttf", "Inter-SemiBold.ttf", "Inter-Bold.ttf"):
+        _p = os.path.join(_FONTES, _f)
+        if os.path.exists(_p):
+            _fm.fontManager.addfont(_p)
+    plt.rcParams["font.family"] = "Inter"
+
+AZUL = "#2A38D6"
+AZUL_CLARO = "#ECEEFC"
+VERDE_CLARO = "#E1F4EC"
+LARANJA_CLARO = "#FFF1D6"
+CINZA_CLARO = "#F3F4FA"
+CINZA = "#6B7385"
 
 
 def nova_figura(w, h, xmax, ymax):
@@ -81,15 +91,15 @@ def arquitetura():
     ax.text(115, 62.5, f"Azure · {REGIAO} · grupo de recursos {GRUPO}",
             ha="right", va="center", fontsize=9.5, color=AZUL, fontweight="bold")
 
-    caixa(ax, 28, 29, 14, 10, "IP público\n(SKU Standard)", fc=LARANJA_CLARO, ec="#c55a11", size=9)
-    caixa(ax, 45, 29, 14, 10, "NSG\nporta 80 (HTTP)\nporta 22 (SSH)", fc=LARANJA_CLARO, ec="#c55a11", size=8.5)
+    caixa(ax, 28, 29, 14, 10, "IP público\n(SKU Standard)", fc=LARANJA_CLARO, ec="#C77700", size=9)
+    caixa(ax, 45, 29, 14, 10, "NSG\nporta 80 (HTTP)\nporta 22 (SSH)", fc=LARANJA_CLARO, ec="#C77700", size=8.5)
 
     caixa(ax, 63, 13, 52, 43, "", fc="white", ec=AZUL, lw=1.8)
     ax.text(89, 53, f"VM {VMNOME} · {SKU} · Ubuntu 22.04",
             ha="center", va="center", fontsize=9.5, fontweight="bold", color=AZUL)
-    caixa(ax, 67, 38, 44, 9, "gunicorn (2 workers) · porta 80\nsystemd: api-tarefas.service", fc=VERDE_CLARO, ec="#548235", size=9)
-    caixa(ax, 67, 26, 44, 8, "Flask · app.py (rotas REST)", fc=VERDE_CLARO, ec="#548235", size=9)
-    caixa(ax, 67, 15, 44, 7, "SQLite · /var/lib/api-tarefas/tarefas.db", fc=VERDE_CLARO, ec="#548235", size=9)
+    caixa(ax, 67, 38, 44, 9, "gunicorn (2 workers) · porta 80\nsystemd: api-tarefas.service", fc=VERDE_CLARO, ec="#0E9F6E", size=9)
+    caixa(ax, 67, 26, 44, 8, "Flask · app.py (rotas REST)", fc=VERDE_CLARO, ec="#0E9F6E", size=9)
+    caixa(ax, 67, 15, 44, 7, "SQLite · /var/lib/api-tarefas/tarefas.db", fc=VERDE_CLARO, ec="#0E9F6E", size=9)
 
     caixa(ax, 63, 4.5, 52, 5, "Disco de SO · Premium SSD · 30 GiB", fc=AZUL_CLARO, ec=AZUL, size=9)
 
@@ -102,7 +112,7 @@ def arquitetura():
     seta(ax, (89, 14.6), (89, 10.1), dy=0)
     seta(ax, (20.4, 59), (62.6, 51), "git clone (deploy)", dy=2.8, dx=0)
 
-    ax.text(60, 70, "Arquitetura da solução", ha="center", va="center", fontsize=13, fontweight="bold", color=AZUL)
+    pass
     salvar(fig, "01-arquitetura.png")
 
 
@@ -115,7 +125,7 @@ def fluxo():
     for nome, x in atores:
         caixa(ax, x - 8, 51, 16, 7, nome, fc=AZUL_CLARO, size=9.5, bold=True)
         ax.plot([x, x], [4, 50.5], color="#999999", lw=1, ls=(0, (4, 3)))
-    ax.text(60, 61.3, "Fluxo de uma requisição: POST /tarefas", ha="center", fontsize=13, fontweight="bold", color=AZUL)
+    pass
 
     passos = [
         (12, 36, 45, "1. POST /tarefas (JSON)", False),
@@ -144,7 +154,7 @@ def fluxo():
 # 3) Modelo de dados -------------------------------------------------------
 def modelo():
     fig, ax = nova_figura(9, 4.6, 90, 46)
-    ax.text(45, 43.5, "Modelo de dados (SQLite)", ha="center", fontsize=13, fontweight="bold", color=AZUL)
+    pass
     caixa(ax, 12, 5, 66, 34, "", fc="white", ec=AZUL, lw=1.8)
     caixa(ax, 12, 33, 66, 6, "tarefas", fc=AZUL, ec=AZUL, size=11, bold=True)
     ax.texts[-1].set_color("white")
@@ -167,7 +177,7 @@ def modelo():
 # 4) Pipeline de deploy ----------------------------------------------------
 def deploy():
     fig, ax = nova_figura(12, 5.2, 120, 52)
-    ax.text(60, 49.5, "Passo a passo do deploy", ha="center", fontsize=13, fontweight="bold", color=AZUL)
+    pass
     passos = [
         ("1. Grupo de recursos", f"{GRUPO}\n(portal ou az group create)"),
         ("2. Máquina virtual", f"portal Azure\n{SKU} · Ubuntu 22.04"),

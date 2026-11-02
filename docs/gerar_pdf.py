@@ -8,48 +8,78 @@ Uso:
 
 - Dados do aluno, repositorio, IP e configuracao da Azure: docs/config.json
 - Prints de evidencia: salve em docs/prints/ com o prefixo da lista de evidencias
-  (ex.: 01-grupo-de-recursos.png, 02-vm-visao-geral.png). Cada print recebe a marca
-  d'agua "Nome - Evidencia Original - data" automaticamente (os originais nao sao
-  alterados). Prints ausentes aparecem como quadro "PENDENTE" no PDF.
+  (ex.: 01-grupo-de-recursos.png). Cada print recebe a marca d'agua
+  "Nome - Evidencia Original" automaticamente (os originais nao sao alterados).
+  Prints ausentes aparecem como quadro "pendente" no PDF.
+- Fontes: docs/fonts (Inter, licenca OFL) e DejaVu Sans Mono (vem com o matplotlib).
 """
 import datetime
 import json
 import os
+import re
 import sys
 import tempfile
 from xml.sax.saxutils import escape
 
 from PIL import Image, ImageDraw, ImageFont
+from pygments import lex
+from pygments.lexers import BashLexer, IniLexer, PythonLexer
+from pygments.token import Token
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen import canvas as rl_canvas
 from reportlab.platypus import (
     BaseDocTemplate,
+    CondPageBreak,
+    Flowable,
     Frame,
-    Image as RLImage,
     KeepTogether,
+    NextPageTemplate,
     PageBreak,
     PageTemplate,
     Paragraph,
-    Preformatted,
     Spacer,
     Table,
     TableStyle,
+    XPreformatted,
 )
+from reportlab.platypus.tableofcontents import TableOfContents
 
 DOCS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(DOCS)
 PRINTS = os.path.join(DOCS, "prints")
 DIAG = os.path.join(DOCS, "diagramas")
+FONTS = os.path.join(DOCS, "fonts")
 SAIDA = os.path.join(DOCS, "Documentacao-API-Tarefas.pdf")
 
-AZUL = colors.HexColor("#1f4e79")
-AZUL_CLARO = colors.HexColor("#dbe9f6")
-CINZA = colors.HexColor("#555555")
-CINZA_CLARO = colors.HexColor("#f2f2f2")
-LARGURA = A4[0] - 4 * cm  # largura util
+# --------------------------------------------------------------------------
+# Identidade visual
+# --------------------------------------------------------------------------
+INDIGO = colors.HexColor("#2A38D6")
+INDIGO_ESCURO = colors.HexColor("#1A2390")
+TINTA = colors.HexColor("#1E2433")
+MUTED = colors.HexColor("#6B7385")
+FIO = colors.HexColor("#DDE0EA")
+FUNDO_SUAVE = colors.HexColor("#F3F4FA")
+VERDE = colors.HexColor("#0E9F6E")
+AMBAR = colors.HexColor("#C77700")
+VERMELHO = colors.HexColor("#CF3A4E")
+TINTA_HEX = "#1E2433"
+INDIGO_HEX = "#2A38D6"
+MUTED_HEX = "#6B7385"
+
+CODE_BG = colors.HexColor("#161B30")
+CODE_BARRA = colors.HexColor("#202744")
+CODE_TXT = "#DCE1F7"
+
+MARGEM_E = 2.1 * cm
+MARGEM_D = 2.1 * cm
+LARGURA = A4[0] - MARGEM_E - MARGEM_D  # largura util
+RECUO_TEXTO = 2.6 * cm  # limita a linha de texto corrido (< 80 caracteres)
 
 # --------------------------------------------------------------------------
 # Configuracao
@@ -76,29 +106,34 @@ PADRAO = {
     },
 }
 
+# (id, titulo, o que a evidencia comprova)
 EVIDENCIAS = [
     ("01", "Grupo de recursos na Azure",
-     "Portal Azure > Grupos de recursos > rg-api-tarefas, mostrando todos os recursos criados (VM, disco, IP, NSG, rede)."),
+     "Todos os recursos da solução estão no grupo rg-api-tarefas: VM, disco, IP público, NSG, "
+     "interface e rede virtual."),
     ("02", "Visão geral da máquina virtual",
-     "Página Visão geral da VM: região, tamanho (SKU Standard_B2ats_v2), sistema operacional, IP público e status Em execução."),
+     "A VM vm-gs está em execução em Canada Central, tamanho Standard_B2ats_v2, Ubuntu 22.04, "
+     "com o IP público 20.104.255.148."),
     ("03", "Regras de entrada do NSG",
-     "VM > Rede (ou o NSG) > Regras de porta de entrada, mostrando a porta 22 (SSH) e a porta 80 (HTTP)."),
+     "O firewall libera a entrada nas portas 80 (HTTP) e 22 (SSH). Todo o resto segue a regra "
+     "padrão de negar."),
     ("04", "Disco do sistema operacional",
-     "VM > Discos: tipo Premium SSD (LRS) e tamanho de 30 GiB."),
+     "O disco do SO é Premium SSD (LRS) de 30 GiB. Nele ficam o sistema, o código e o arquivo do banco."),
     ("05", "Configuração da VM via SSH",
-     "Terminal executando deploy/setup-vm.sh dentro da VM, até a última linha com o retorno do /health."),
+     "O script setup-vm.sh instalou a aplicação dentro da VM e o /health respondeu "
+     "{\"banco\":\"sqlite\",\"status\":\"ok\"}."),
     ("06", "Serviço ativo no systemd",
-     "Saída de: sudo systemctl status api-tarefas (active (running))."),
+     "O api-tarefas.service está active (running), com o gunicorn e seus 2 workers."),
     ("07", "Teste da rota /health pela internet",
-     "Navegador ou curl em http://IP_PUBLICO/health a partir da sua máquina (não de dentro da VM)."),
+     "A API responde fora da VM: o /health abriu no navegador do aluno, pelo IP público."),
     ("08", "Criando uma tarefa (POST)",
-     "curl -X POST http://IP_PUBLICO/tarefas ... com a resposta 201 e o JSON da tarefa."),
-    ("09", "Listando e consultando tarefas (GET)",
-     "curl em /tarefas e /tarefas/1 mostrando os dados gravados no SQLite."),
+     "POST /tarefas devolve 201 Created com o JSON da tarefa gravada no SQLite (id 1)."),
+    ("09", "Listando tarefas (GET)",
+     "GET /tarefas devolve a tarefa recém-gravada, o que confirma a persistência no banco."),
     ("10", "Atualizando e removendo (PUT e DELETE)",
-     "curl -X PUT marcando concluida como true e curl -X DELETE (204), seguido de um GET que retorna 404."),
+     "O PUT altera concluida para true, o DELETE responde 204 e a consulta seguinte retorna 404."),
     ("11", "Repositório no GitHub",
-     "Página do repositório público api-tarefas com a lista de arquivos e a URL visível na barra de endereço."),
+     "O código está em um repositório público do GitHub, com as pastas deploy, docs e tests."),
 ]
 
 
@@ -128,14 +163,64 @@ def e(texto):
 
 
 # --------------------------------------------------------------------------
+# Fontes
+# --------------------------------------------------------------------------
+def registrar_fontes():
+    import matplotlib
+
+    mpl = os.path.join(matplotlib.get_data_path(), "fonts", "ttf")
+    inter = {
+        "Inter": "Inter-Regular.ttf",
+        "Inter-Italic": "Inter-Italic.ttf",
+        "Inter-Medium": "Inter-Medium.ttf",
+        "Inter-SemiBold": "Inter-SemiBold.ttf",
+        "Inter-Bold": "Inter-Bold.ttf",
+        "Inter-BoldItalic": "Inter-BoldItalic.ttf",
+        "Inter-ExtraBold": "Inter-ExtraBold.ttf",
+        "Inter-Display": "InterDisplay-ExtraBold.ttf",
+    }
+    dejavu = {
+        "Inter": "DejaVuSans.ttf",
+        "Inter-Italic": "DejaVuSans-Oblique.ttf",
+        "Inter-Medium": "DejaVuSans.ttf",
+        "Inter-SemiBold": "DejaVuSans-Bold.ttf",
+        "Inter-Bold": "DejaVuSans-Bold.ttf",
+        "Inter-BoldItalic": "DejaVuSans-BoldOblique.ttf",
+        "Inter-ExtraBold": "DejaVuSans-Bold.ttf",
+        "Inter-Display": "DejaVuSans-Bold.ttf",
+    }
+    usar_inter = all(os.path.exists(os.path.join(FONTS, f)) for f in inter.values())
+    origem, pasta = (inter, FONTS) if usar_inter else (dejavu, mpl)
+    if not usar_inter:
+        print("Aviso: docs/fonts nao encontrada; usando DejaVu Sans no lugar da Inter.")
+    for nome, arq in origem.items():
+        pdfmetrics.registerFont(TTFont(nome, os.path.join(pasta, arq)))
+    pdfmetrics.registerFontFamily(
+        "Inter", normal="Inter", bold="Inter-Bold", italic="Inter-Italic", boldItalic="Inter-BoldItalic")
+    mono = {
+        "Mono": "DejaVuSansMono.ttf",
+        "Mono-Bold": "DejaVuSansMono-Bold.ttf",
+        "Mono-Oblique": "DejaVuSansMono-Oblique.ttf",
+        "Mono-BoldOblique": "DejaVuSansMono-BoldOblique.ttf",
+    }
+    for nome, arq in mono.items():
+        pdfmetrics.registerFont(TTFont(nome, os.path.join(mpl, arq)))
+    pdfmetrics.registerFontFamily(
+        "Mono", normal="Mono", bold="Mono-Bold", italic="Mono-Oblique", boldItalic="Mono-BoldOblique")
+
+
+registrar_fontes()
+
+
+# --------------------------------------------------------------------------
 # Marca d'agua nos prints
 # --------------------------------------------------------------------------
 def carregar_fonte(tamanho):
     candidatos = [
+        os.path.join(FONTS, "Inter-Medium.ttf"),
         "C:/Windows/Fonts/arial.ttf",
         "/System/Library/Fonts/Supplemental/Arial.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
     ]
     for caminho in candidatos:
         if os.path.exists(caminho):
@@ -149,7 +234,7 @@ def carregar_fonte(tamanho):
         return ImageFont.load_default(size=tamanho)
 
 
-def aplicar_marca_dagua(origem, destino, data_txt):
+def aplicar_marca_dagua(origem, destino):
     texto = f"{CFG['aluno']} · Evidência Original"
     img = Image.open(origem).convert("RGB")
     if img.width > 1800:
@@ -202,166 +287,678 @@ def achar_prints(prefixo):
 # Estilos
 # --------------------------------------------------------------------------
 S = {
-    "body": ParagraphStyle("body", fontName="Helvetica", fontSize=10, leading=14.5,
-                           spaceAfter=6, textColor=colors.HexColor("#222222")),
-    "h1": ParagraphStyle("h1", fontName="Helvetica-Bold", fontSize=16, leading=20,
-                         textColor=AZUL, spaceBefore=14, spaceAfter=8, keepWithNext=1),
-    "h2": ParagraphStyle("h2", fontName="Helvetica-Bold", fontSize=12, leading=16,
-                         textColor=AZUL, spaceBefore=10, spaceAfter=5, keepWithNext=1),
-    "cap": ParagraphStyle("cap", fontName="Helvetica-Oblique", fontSize=8.8, leading=11,
-                          textColor=CINZA, alignment=TA_CENTER, spaceBefore=3, spaceAfter=10),
-    "cell": ParagraphStyle("cell", fontName="Helvetica", fontSize=9, leading=12),
-    "cellh": ParagraphStyle("cellh", fontName="Helvetica-Bold", fontSize=9, leading=12,
-                            textColor=colors.white),
-    "bul": ParagraphStyle("bul", fontName="Helvetica", fontSize=10, leading=14,
-                          leftIndent=14, bulletIndent=3, spaceAfter=3,
-                          textColor=colors.HexColor("#222222")),
-    "code": ParagraphStyle("code", fontName="Courier", fontSize=7.6, leading=9.6),
-    "capa_t": ParagraphStyle("capa_t", fontName="Helvetica-Bold", fontSize=26, leading=31,
-                             textColor=colors.white),
-    "capa_s": ParagraphStyle("capa_s", fontName="Helvetica", fontSize=13, leading=18,
-                             textColor=colors.white),
-    "pend": ParagraphStyle("pend", fontName="Helvetica", fontSize=9.5, leading=13,
-                           textColor=colors.HexColor("#7f3f00"), alignment=TA_CENTER),
+    "body": ParagraphStyle("body", fontName="Inter", fontSize=9.4, leading=14.6, spaceAfter=7,
+                           textColor=TINTA, rightIndent=RECUO_TEXTO),
+    "body_k": ParagraphStyle("body_k", fontName="Inter", fontSize=9.4, leading=14.6, spaceAfter=7,
+                             textColor=TINTA, rightIndent=RECUO_TEXTO, keepWithNext=1),
+    "h2": ParagraphStyle("h2", fontName="Inter-SemiBold", fontSize=11.8, leading=15, textColor=TINTA,
+                         spaceBefore=15, spaceAfter=6, keepWithNext=1),
+    "cap": ParagraphStyle("cap", fontName="Inter", fontSize=8, leading=11, textColor=MUTED,
+                          spaceBefore=5, spaceAfter=14),
+    "cell": ParagraphStyle("cell", fontName="Inter", fontSize=8.5, leading=11.8, textColor=TINTA),
+    "cellf": ParagraphStyle("cellf", fontName="Inter-SemiBold", fontSize=8.5, leading=11.8, textColor=TINTA),
+    "cellh": ParagraphStyle("cellh", fontName="Inter-SemiBold", fontSize=8, leading=10.5, textColor=INDIGO),
+    "bul": ParagraphStyle("bul", fontName="Inter", fontSize=9.4, leading=14.2, leftIndent=13,
+                          bulletIndent=1, spaceAfter=4.5, textColor=TINTA, rightIndent=RECUO_TEXTO),
+    "call_t": ParagraphStyle("call_t", fontName="Inter-SemiBold", fontSize=8.8, leading=11.5, spaceAfter=2),
+    "call_b": ParagraphStyle("call_b", fontName="Inter", fontSize=8.8, leading=13, textColor=TINTA),
+    "ficha_l": ParagraphStyle("ficha_l", fontName="Inter", fontSize=7.6, leading=10, textColor=MUTED),
+    "ficha_v": ParagraphStyle("ficha_v", fontName="Inter-SemiBold", fontSize=9.4, leading=13, textColor=TINTA),
+    "evid": ParagraphStyle("evid", fontName="Inter", fontSize=8.3, leading=11.6, textColor=MUTED),
 }
 
 N_FIG = [0]
+COD_ST = ParagraphStyle("cod", fontName="Mono", fontSize=7.3, leading=9.7, textColor=colors.HexColor(CODE_TXT))
+NUM_ST = ParagraphStyle("num", fontName="Mono", fontSize=7.3, leading=9.7, textColor=colors.HexColor("#5D668C"),
+                        alignment=2)
+
+
+def _mono_inline(texto):
+    """Troca o Courier dos trechos inline pelo mono do documento, com cor discreta."""
+    return re.sub(r"<font name=['\"]Courier['\"]>",
+                  f"<font name='Mono' size='8.2' color='{INDIGO_ESCURO.hexval().replace('0x', '#')}'>", texto)
 
 
 def P(texto, estilo="body"):
-    return Paragraph(texto, S[estilo])
+    if estilo == "h1":
+        m = re.match(r"^(\d+)\.\s+(.*)$", texto)
+        if m:
+            return SecaoH1(m.group(1), m.group(2))
+        m = re.match(r"^Anexo ([A-Z]) - (.*)$", texto)
+        if m:
+            return SecaoH1(m.group(1), m.group(2))
+        return SecaoH1("", texto)
+    if estilo == "h2":
+        m = re.match(r"^(\d+(?:\.\d+)+)\s+(.*)$", texto)
+        if m:
+            texto = (f"<font name='Inter-SemiBold' color='{INDIGO_HEX}'>{m.group(1)}</font>"
+                     f"&nbsp;&nbsp;&nbsp;{m.group(2)}")
+    return Paragraph(_mono_inline(texto), S[estilo])
 
 
 def bullets(itens):
-    return [Paragraph(t, S["bul"], bulletText="•") for t in itens]
+    marca = f"<bullet><font name='Inter-Bold' color='{INDIGO_HEX}' size='7'>&#9632;</font></bullet>"
+    return [Paragraph(marca + _mono_inline(t), S["bul"]) for t in itens]
 
 
-def tabela(linhas, larguras, cabecalho=True):
+# --------------------------------------------------------------------------
+# Componentes
+# --------------------------------------------------------------------------
+class SecaoH1(Flowable):
+    """Titulo de secao: numero grande em indigo, titulo ao lado, fio no topo."""
+
+    ALTURA = 50
+    COLUNA = 50
+
+    def __init__(self, numero, titulo, entrada=True):
+        super().__init__()
+        self.numero = numero
+        self.titulo = titulo
+        self.entrada = entrada and bool(numero)
+        self.keepWithNext = True
+        self.spaceBefore = 26
+        self.spaceAfter = 10
+
+    def wrap(self, aw, ah):
+        self.largura = aw
+        return aw, self.ALTURA
+
+    def draw(self):
+        c = self.canv
+        self.y_abs = c.absolutePosition(0, 0)[1]
+        c.setStrokeColor(FIO)
+        c.setLineWidth(0.7)
+        c.line(0, self.ALTURA, self.largura, self.ALTURA)
+        x_titulo = 0
+        if self.numero:
+            c.setFillColor(INDIGO)
+            c.setFont("Inter-Display", 31)
+            c.drawString(0, 11, self.numero)
+            x_titulo = self.COLUNA
+        c.setFillColor(TINTA)
+        c.setFont("Inter-Bold", 18)
+        c.drawString(x_titulo, 13, self.titulo)
+
+    def texto_toc(self):
+        larg = pdfmetrics.stringWidth(self.numero, "Inter-SemiBold", 10)
+        razao = pdfmetrics.stringWidth(" ", "Inter", 1) or 0.28
+        falta = max(2.0, 24 - larg)
+        n = int(falta // (razao * 10))
+        resto = falta - n * razao * 10
+        folga = "&nbsp;" * n + (f"<font size='{max(1.0, resto / razao):.2f}'>&nbsp;</font>" if resto > 0.3 else "")
+        return (f"<font name='Inter-SemiBold' color='{INDIGO_HEX}'>{e(self.numero)}</font>"
+                f"{folga}{e(self.titulo)}")
+
+
+def tabela(linhas, larguras, cabecalho=True, forte=True, estilos_extra=None, dividir=False):
     dados = []
     for i, linha in enumerate(linhas):
-        estilo = "cellh" if (cabecalho and i == 0) else "cell"
-        dados.append([Paragraph(str(c), S[estilo]) for c in linha])
+        linha_p = []
+        for j, c in enumerate(linha):
+            if cabecalho and i == 0:
+                est = "cellh"
+            elif forte and j == 0:
+                est = "cellf"
+            else:
+                est = "cell"
+            linha_p.append(Paragraph(_mono_inline(str(c)), S[est]))
+        dados.append(linha_p)
     t = Table(dados, colWidths=larguras, repeatRows=1 if cabecalho else 0)
     estilos = [
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#bbbbbb")),
-        ("LEFTPADDING", (0, 0), (-1, -1), 5),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LINEBELOW", (0, 1), (-1, -1), 0.45, FIO),
     ]
     if cabecalho:
-        estilos.append(("BACKGROUND", (0, 0), (-1, 0), AZUL))
-        for i in range(1, len(dados)):
-            if i % 2 == 0:
-                estilos.append(("BACKGROUND", (0, i), (-1, i), CINZA_CLARO))
+        estilos += [("LINEBELOW", (0, 0), (-1, 0), 1.2, INDIGO),
+                    ("TOPPADDING", (0, 0), (-1, 0), 3), ("BOTTOMPADDING", (0, 0), (-1, 0), 6)]
+    if len(dados) <= 10 and not dividir:
+        estilos.append(("NOSPLIT", (0, 0), (-1, -1)))
+    if estilos_extra:
+        estilos += estilos_extra
     t.setStyle(TableStyle(estilos))
-    return [t, Spacer(1, 8)]
+    return [t, Spacer(1, 12)]
 
 
-def codigo(texto, max_linhas=24):
-    """Bloco de codigo com fundo cinza; quebra em varias linhas de tabela para poder
-    atravessar paginas."""
-    linhas = texto.rstrip("\n").split("\n")
-    pedacos = ["\n".join(linhas[i:i + max_linhas]) for i in range(0, len(linhas), max_linhas)]
-    dados = [[Preformatted(p, S["code"])] for p in pedacos]
-    t = Table(dados, colWidths=[LARGURA])
+def ficha(itens):
+    """Faixa de resumo: valor em destaque e legenda pequena, separadas por fios."""
+    n = len(itens)
+    larg = LARGURA / n
+    linha = [[Paragraph(e(r), S["ficha_l"]), Paragraph(e(v), S["ficha_v"])] for r, v in itens]
+    dados = [[Table([[a], [b]], colWidths=[larg - 14], style=TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ])) for a, b in linha]]
+    t = Table(dados, colWidths=[larg] * n)
+    est = [
+        ("LINEABOVE", (0, 0), (-1, 0), 2.2, INDIGO),
+        ("TOPPADDING", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 12),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("LEFTPADDING", (0, 0), (0, 0), 0),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]
+    for i in range(1, n):
+        est.append(("LINEBEFORE", (i, 0), (i, 0), 0.6, FIO))
+    t.setStyle(TableStyle(est))
+    return [t, Spacer(1, 14)]
+
+
+def callout(titulo, texto, tom="info"):
+    cor = {"info": INDIGO, "aviso": AMBAR}[tom]
+    fundo = {"info": colors.HexColor("#EEF0FD"), "aviso": colors.HexColor("#FFF4DC")}[tom]
+    titulo_st = ParagraphStyle("ct", parent=S["call_t"], textColor=cor)
+    conteudo = [Paragraph(e(titulo), titulo_st), Paragraph(_mono_inline(texto), S["call_b"])]
+    t = Table([["", conteudo]], colWidths=[3, LARGURA - 3 - 2.6 * cm], hAlign="LEFT")
     t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), CINZA_CLARO),
-        ("BOX", (0, 0), (-1, -1), 0.4, colors.HexColor("#cccccc")),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("BACKGROUND", (0, 0), (0, 0), cor),
+        ("BACKGROUND", (1, 0), (1, 0), fundo),
+        ("LEFTPADDING", (0, 0), (0, 0), 0), ("RIGHTPADDING", (0, 0), (0, 0), 0),
+        ("LEFTPADDING", (1, 0), (1, 0), 12), ("RIGHTPADDING", (1, 0), (1, 0), 12),
+        ("TOPPADDING", (0, 0), (-1, -1), 9), ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
     ]))
-    return [t, Spacer(1, 8)]
+    return [t, Spacer(1, 12)]
 
 
-def figura_itens(caminho, legenda, larg_max=None, alt_max=11.5 * cm):
+# ---- codigo com realce de sintaxe ----------------------------------------
+_COR_TOKEN = [
+    (Token.Comment, ("#7C86A8", "i")),
+    (Token.Keyword, ("#A5B4FF", "")),
+    (Token.Operator.Word, ("#A5B4FF", "")),
+    (Token.Name.Builtin, ("#A5B4FF", "")),
+    (Token.Name.Decorator, ("#FFC98B", "")),
+    (Token.Name.Function, ("#FFFFFF", "b")),
+    (Token.Name.Class, ("#FFFFFF", "b")),
+    (Token.Name.Tag, ("#A5B4FF", "")),
+    (Token.Name.Attribute, ("#FFC98B", "")),
+    (Token.Name.Variable, ("#FFC98B", "")),
+    (Token.Literal.String, ("#8FE3BC", "")),
+    (Token.Literal.Number, ("#FFC98B", "")),
+    (Token.Keyword.Constant, ("#FFC98B", "")),
+]
+
+
+def _estilo_token(tok):
+    escolhido = None
+    for base, estilo in _COR_TOKEN:
+        if tok in base:
+            escolhido = estilo
+    return escolhido
+
+
+def _linhas_realce(texto, lang):
+    """Devolve uma lista de linhas ja marcadas (cada linha fecha as suas tags)."""
+    linhas = _linhas_realce_bruto(texto, lang)
+    # linhas vazias precisam de um caractere, senao o XPreformatted as engole
+    return [ln if re.sub(r"<[^>]+>", "", ln).strip() else "&nbsp;" for ln in linhas]
+
+
+def _linhas_realce_bruto(texto, lang):
+    linhas = texto.rstrip("\n").split("\n")
+    if lang == "term":
+        saida = []
+        anterior_continua = False
+        for ln in linhas:
+            if ln.startswith("$"):
+                saida.append(f"<font color='#37D399'>$</font> <font color='#FFFFFF'>{e(ln[2:])}</font>")
+                anterior_continua = ln.rstrip().endswith("\\")
+            elif anterior_continua:
+                saida.append(f"<font color='#FFFFFF'>{e(ln)}</font>")
+                anterior_continua = ln.rstrip().endswith("\\")
+            elif ln.startswith("HTTP"):
+                m = re.match(r"HTTP (\d+)", ln)
+                cor = "#37D399" if m and m.group(1).startswith("2") else "#FFC98B"
+                saida.append(f"<font color='{cor}'><b>{e(ln)}</b></font>")
+            else:
+                saida.append(f"<font color='#AAB4DD'>{e(ln)}</font>")
+        return saida
+    lexer = {"py": PythonLexer(), "sh": BashLexer(), "ini": IniLexer()}.get(lang)
+    if lexer is None:
+        return [f"<font color='{CODE_TXT}'>{e(ln)}</font>" if ln else "" for ln in linhas]
+    saida, atual = [], ""
+    for tok, val in lex(texto.rstrip("\n") + "\n", lexer):
+        estilo = _estilo_token(tok)
+        partes = val.split("\n")
+        for i, parte in enumerate(partes):
+            if i > 0:
+                saida.append(atual)
+                atual = ""
+            if not parte:
+                continue
+            txt = e(parte)
+            if estilo:
+                cor, fmt = estilo
+                if "b" in fmt:
+                    txt = f"<b>{txt}</b>"
+                if "i" in fmt:
+                    txt = f"<i>{txt}</i>"
+                txt = f"<font color='{cor}'>{txt}</font>"
+            atual += txt
+    if atual:
+        saida.append(atual)
+    while saida and not saida[-1].strip():
+        saida.pop()
+    return saida
+
+
+def codigo(texto, lang="txt", titulo=None, numeros=False, max_linhas=14):
+    """Painel de codigo escuro, com barra de titulo opcional; atravessa paginas em blocos."""
+    linhas = _linhas_realce(texto, lang)
+    n_gut = 26 if numeros else 0
+    dados, estilos = [], []
+    r = 0
+    if titulo:
+        dados.append([Paragraph(f"<font name='Mono' size='7.2' color='#AAB4DD'>{e(titulo)}</font>",
+                                ParagraphStyle("ctit", fontName="Mono", fontSize=7.2, leading=9)), ""])
+        estilos += [("BACKGROUND", (0, 0), (-1, 0), CODE_BARRA),
+                    ("TOPPADDING", (0, 0), (-1, 0), 6), ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+                    ("SPAN", (0, 0), (-1, 0))]
+        r = 1
+    for ini in range(0, len(linhas), max_linhas):
+        bloco = linhas[ini:ini + max_linhas]
+        cod = XPreformatted("\n".join(bloco), COD_ST)
+        if numeros:
+            gut = XPreformatted("\n".join(str(ini + i + 1) for i in range(len(bloco))), NUM_ST)
+            dados.append([gut, cod])
+        else:
+            dados.append([cod, ""])
+    cols = [n_gut, LARGURA - n_gut] if numeros else [LARGURA, 0]
+    if not numeros:
+        cols = [LARGURA, 0.01]
+    t = Table(dados, colWidths=cols if numeros else [LARGURA - 0.01, 0.01])
+    estilos += [
+        ("BACKGROUND", (0, r), (-1, -1), CODE_BG),
+        ("LEFTPADDING", (0, r), (-1, -1), 12), ("RIGHTPADDING", (0, r), (-1, -1), 12),
+        ("TOPPADDING", (0, r), (-1, -1), 2), ("BOTTOMPADDING", (0, r), (-1, -1), 2),
+        ("TOPPADDING", (0, r), (-1, r), 10), ("BOTTOMPADDING", (0, -1), (-1, -1), 10),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]
+    if titulo:
+        estilos += [("LEFTPADDING", (0, 0), (-1, 0), 12), ("NOSPLIT", (0, 0), (-1, min(1, len(dados) - 1)))]
+    if numeros:
+        estilos += [("LEFTPADDING", (0, r), (0, -1), 4), ("RIGHTPADDING", (0, r), (0, -1), 4),
+                    ("LEFTPADDING", (1, r), (1, -1), 8), ("RIGHTPADDING", (1, r), (1, -1), 12)]
+    t.setStyle(TableStyle(estilos))
+    return [t, Spacer(1, 12)]
+
+
+def figura(caminho, legenda, alt_max=10 * cm, larg_max=None):
     N_FIG[0] += 1
     larg_max = larg_max or LARGURA
     with Image.open(caminho) as im:
         w, h = im.size
     escala = min(larg_max / w, alt_max / h)
-    img = RLImage(caminho, width=w * escala, height=h * escala)
-    return [img, P(f"Figura {N_FIG[0]} - {legenda}", "cap")]
+    cap = Paragraph(f"<font name='Inter-SemiBold' color='{TINTA_HEX}'>Figura {N_FIG[0]}</font>"
+                    f"&nbsp;&nbsp;{legenda}", S["cap"])
+    return Figura(caminho, w * escala, h * escala, cap)
 
 
-def figura(caminho, legenda, larg_max=None, alt_max=11.5 * cm):
-    return KeepTogether(figura_itens(caminho, legenda, larg_max, alt_max))
+class Figura(Flowable):
+    """Imagem com legenda, tratada como um bloco unico (nao quebra entre paginas)."""
+
+    def __init__(self, caminho, w, h, legenda):
+        super().__init__()
+        self.caminho, self.w, self.h, self.legenda = caminho, w, h, legenda
+
+    def wrap(self, aw, ah):
+        _, hc = self.legenda.wrap(aw, ah)
+        self.hc = hc + self.legenda.style.spaceBefore + self.legenda.style.spaceAfter
+        return aw, self.h + self.hc
+
+    def draw(self):
+        self.canv.drawImage(self.caminho, 0, self.hc, self.w, self.h, mask="auto")
+        self.legenda.drawOn(self.canv, 0, self.legenda.style.spaceAfter)
 
 
-def quadro_pendente_itens(arquivo_sugerido, o_que_mostrar):
-    N_FIG[0] += 1
-    txt = (f"<b>PRINT PENDENTE</b><br/>Salve o print em <font name='Courier'>docs/prints/"
-           f"{e(arquivo_sugerido)}</font> e gere o PDF de novo.<br/><i>{e(o_que_mostrar)}</i>")
-    t = Table([[Paragraph(txt, S["pend"])]], colWidths=[LARGURA], rowHeights=[3.2 * cm])
-    t.setStyle(TableStyle([
-        ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#c55a11")),
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff4e5")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-    ]))
-    return [t, P(f"Figura {N_FIG[0]} - (pendente)", "cap")]
+class SkuDecoder(Flowable):
+    """Mostra como ler o nome do tamanho da VM, parte por parte."""
+
+    def __init__(self, partes, altura=70):
+        super().__init__()
+        self.partes, self.altura = partes, altura
+
+    def wrap(self, aw, ah):
+        self.largura = aw
+        return aw, self.altura
+
+    def draw(self):
+        c = self.canv
+        n = len(self.partes)
+        col = self.largura / n
+        for i, (codigo_, legenda) in enumerate(self.partes):
+            x0 = i * col
+            larg_chip = max(34, pdfmetrics.stringWidth(codigo_, "Inter-Bold", 15) + 20)
+            cx = x0 + col / 2
+            c.setFillColor(colors.HexColor("#EEF0FD"))
+            c.setStrokeColor(INDIGO)
+            c.setLineWidth(0.8)
+            c.roundRect(cx - larg_chip / 2, self.altura - 34, larg_chip, 30, 5, stroke=1, fill=1)
+            c.setFillColor(INDIGO)
+            c.setFont("Inter-Bold", 15)
+            c.drawCentredString(cx, self.altura - 25, codigo_)
+            c.setStrokeColor(FIO)
+            c.setLineWidth(0.7)
+            c.line(cx, self.altura - 34, cx, self.altura - 42)
+            p = Paragraph(legenda, ParagraphStyle("sk", fontName="Inter", fontSize=7.6, leading=9.6,
+                                                  textColor=MUTED, alignment=1))
+            _, h = p.wrap(col - 8, 40)
+            p.drawOn(c, x0 + 4, self.altura - 44 - h)
+
+
+class CartaoEvidencia(Flowable):
+    """Cartao de evidencia: numero, titulo, print(s) e o que ele comprova."""
+
+    CAB = 30
+    PAD = 10
+
+    def __init__(self, ident, titulo, comprova, imagens, alt_max=8.4 * cm, pendente_txt=None):
+        super().__init__()
+        self.ident, self.titulo, self.comprova = ident, titulo, comprova
+        self.imagens = imagens
+        self.alt_max = alt_max
+        self.pendente_txt = pendente_txt
+        self.keepWithNext = False
+        self.spaceAfter = 16
+
+    def _dimensoes(self):
+        interna = self.largura - 2 * self.PAD
+        dims = []
+        for caminho in self.imagens:
+            with Image.open(caminho) as im:
+                w, h = im.size
+            esc = min(interna / w, self.alt_max / h)
+            dims.append((w * esc, h * esc))
+        return dims
+
+    def wrap(self, aw, ah):
+        self.largura = aw
+        self.dims = self._dimensoes()
+        self.p_comp = Paragraph(
+            f"<font name='Inter-SemiBold' color='{TINTA_HEX}'>O que comprova.</font> {e(self.comprova)}",
+            S["evid"])
+        _, self.h_comp = self.p_comp.wrap(aw - 2 * self.PAD - 2, 100)
+        corpo = sum(h for _, h in self.dims) + 8 * max(0, len(self.dims) - 1) if self.dims else 64
+        self.altura = self.CAB + self.PAD + corpo + self.PAD + self.h_comp + self.PAD + 2
+        return aw, self.altura
+
+    def draw(self):
+        c = self.canv
+        w, h = self.largura, self.altura
+        c.setStrokeColor(FIO)
+        c.setLineWidth(0.8)
+        c.setFillColor(colors.white)
+        c.roundRect(0, 0, w, h, 5, stroke=1, fill=1)
+        # cabecalho
+        c.setFillColor(FUNDO_SUAVE)
+        c.saveState()
+        p = c.beginPath()
+        p.roundRect(0, h - self.CAB, w, self.CAB, 5)
+        c.clipPath(p, stroke=0, fill=0)
+        c.rect(0, h - self.CAB, w, self.CAB, stroke=0, fill=1)
+        c.restoreState()
+        c.setFillColor(FUNDO_SUAVE)
+        c.rect(0, h - self.CAB, w, self.CAB - 6, stroke=0, fill=1)
+        c.setStrokeColor(FIO)
+        c.line(0, h - self.CAB, w, h - self.CAB)
+        c.setFillColor(INDIGO)
+        c.roundRect(self.PAD, h - self.CAB + 7, 26, 16, 3.5, stroke=0, fill=1)
+        c.setFillColor(colors.white)
+        c.setFont("Inter-Bold", 8.6)
+        c.drawCentredString(self.PAD + 13, h - self.CAB + 12, self.ident)
+        c.setFillColor(TINTA)
+        c.setFont("Inter-SemiBold", 9.6)
+        c.drawString(self.PAD + 36, h - self.CAB + 11.5, self.titulo)
+        # prints
+        y = h - self.CAB - self.PAD
+        if not self.dims:
+            c.setStrokeColor(AMBAR)
+            c.setDash(3, 3)
+            c.setFillColor(colors.HexColor("#FFF9EC"))
+            c.roundRect(self.PAD, y - 64, w - 2 * self.PAD, 64, 4, stroke=1, fill=1)
+            c.setDash()
+            c.setFillColor(AMBAR)
+            c.setFont("Inter-SemiBold", 9)
+            c.drawCentredString(w / 2, y - 28, "Print pendente")
+            c.setFont("Inter", 8)
+            c.drawCentredString(w / 2, y - 42, self.pendente_txt or "")
+            y -= 64
+        for (iw, ih), caminho in zip(self.dims, self.imagens):
+            x = (w - iw) / 2
+            c.drawImage(caminho, x, y - ih, iw, ih)
+            c.setStrokeColor(FIO)
+            c.setLineWidth(0.6)
+            c.rect(x, y - ih, iw, ih, stroke=1, fill=0)
+            y -= ih + 8
+        y += 8
+        self.p_comp.drawOn(c, self.PAD + 1, y - self.PAD - self.h_comp)
 
 
 # --------------------------------------------------------------------------
 # Paginas
 # --------------------------------------------------------------------------
-def rodape(canvas, doc):
-    canvas.saveState()
-    canvas.setStrokeColor(colors.HexColor("#cccccc"))
-    canvas.line(2 * cm, 1.5 * cm, A4[0] - 2 * cm, 1.5 * cm)
-    canvas.setFont("Helvetica", 8)
-    canvas.setFillColor(CINZA)
-    canvas.drawString(2 * cm, 1.0 * cm, f"API de Tarefas · {CFG['aluno']}")
-    canvas.drawRightString(A4[0] - 2 * cm, 1.0 * cm, f"Página {doc.page}")
-    canvas.restoreState()
+def _texto(c, x, y, s, fonte, tam, cor=colors.white, alpha=1.0, ancora="l", espaco=0):
+    c.saveState()
+    c.setFillColor(cor)
+    c.setFillAlpha(alpha)
+    t = c.beginText()
+    t.setTextOrigin(x, y)
+    t.setFont(fonte, tam)
+    t.setCharSpace(espaco)
+    if ancora == "r":
+        t.setTextOrigin(x - pdfmetrics.stringWidth(s, fonte, tam) - espaco * len(s), y)
+    elif ancora == "c":
+        t.setTextOrigin(x - pdfmetrics.stringWidth(s, fonte, tam) / 2, y)
+    t.textOut(s)
+    c.drawText(t)
+    c.restoreState()
 
 
-def capa():
-    itens = [
-        ("Aluno", e(CFG["aluno"]) + (f" (RM {e(CFG['rm'])})" if CFG["rm"] else "")),
-        ("Turma", e(CFG["turma"])),
-        ("Disciplina", e(CFG["disciplina"])),
-        ("Professor", e(CFG["professor"])),
-        ("Data", e(DATA_DOC)),
-        ("Repositório", e(CFG["repo_url"])),
-        ("URL da API", e(f"http://{CFG['ip_publico']}")),
+def desenhar_capa(c, doc):
+    W, H = A4
+    c.saveState()
+    c.setFillColor(INDIGO)
+    c.rect(0, 0, W, H, stroke=0, fill=1)
+    ml = 2.1 * cm
+
+    # topo
+    _texto(c, ml, H - 52, CFG["disciplina"], "Inter-SemiBold", 10.5)
+    _texto(c, ml, H - 67, CFG["professor"], "Inter", 9.5, alpha=0.7)
+    larg_turma = pdfmetrics.stringWidth(CFG["turma"], "Inter-SemiBold", 9.5) + 22
+    c.setStrokeColor(colors.white)
+    c.setStrokeAlpha(0.6)
+    c.setLineWidth(0.8)
+    c.roundRect(W - ml - larg_turma, H - 66, larg_turma, 20, 10, stroke=1, fill=0)
+    _texto(c, W - ml - larg_turma / 2, H - 59.5, CFG["turma"], "Inter-SemiBold", 9.5, ancora="c")
+
+    # titulo
+    _texto(c, ml - 3, H - 190, "API de", "Inter-Display", 80, espaco=-2.2)
+    _texto(c, ml - 3, H - 262, "Tarefas", "Inter-Display", 80, espaco=-2.2)
+    sub = "API REST com Flask e banco SQLite, publicada de ponta a ponta em uma máquina virtual na Azure."
+    from reportlab.lib.utils import simpleSplit
+    y = H - 300
+    for ln in simpleSplit(sub, "Inter", 13.5, 360):
+        _texto(c, ml, y, ln, "Inter", 13.5, alpha=0.9)
+        y -= 18.5
+
+    # camadas: do cliente ate o dado
+    topo, alt_b = H - 372, 82
+    camadas = [
+        ("Cliente", "curl ou navegador", "HTTP"),
+        ("Rede", f"IP público {CFG['ip_publico']} e NSG", "portas 80 e 22"),
+        ("Máquina virtual", f"{AZ['vm_nome']}, Ubuntu 22.04, gunicorn e Flask", AZ["sku"]),
+        ("Dados", "SQLite no disco Premium SSD da VM", "/var/lib/api-tarefas/tarefas.db"),
     ]
-    itens = [i for i in itens if i[1].strip()]
-    topo = Table(
-        [[Paragraph("Documentação Técnica", S["capa_s"])],
-         [Paragraph("API de Tarefas com Flask e SQLite hospedada em uma VM na Azure", S["capa_t"])]],
-        colWidths=[LARGURA])
-    topo.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), AZUL),
-        ("LEFTPADDING", (0, 0), (-1, -1), 18),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 18),
-        ("TOPPADDING", (0, 0), (-1, 0), 22),
-        ("BOTTOMPADDING", (0, -1), (-1, -1), 26),
-    ]))
-    info = Table([[Paragraph(f"<b>{k}</b>", S["cell"]), Paragraph(v, S["cell"])] for k, v in itens],
-                 colWidths=[3.2 * cm, LARGURA - 3.2 * cm])
-    info.setStyle(TableStyle([
-        ("LINEBELOW", (0, 0), (-1, -1), 0.4, colors.HexColor("#cccccc")),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-    ]))
-    return [Spacer(1, 3 * cm), topo, Spacer(1, 1.2 * cm), info, PageBreak()]
+    for i, (nome, desc, dir_) in enumerate(camadas):
+        y_top = topo - i * alt_b
+        c.saveState()
+        c.setFillColor(colors.black)
+        c.setFillAlpha(0.07 + 0.085 * i)
+        c.rect(0, y_top - alt_b, W, alt_b, stroke=0, fill=1)
+        c.restoreState()
+        c.setStrokeColor(colors.white)
+        c.setStrokeAlpha(0.22)
+        c.setLineWidth(0.6)
+        c.line(0, y_top, W, y_top)
+        _texto(c, ml, y_top - 38, nome, "Inter-Bold", 16)
+        _texto(c, ml, y_top - 55, desc, "Inter", 8.8, alpha=0.75)
+        fonte = "Mono" if dir_.startswith("/") else "Inter-Medium"
+        _texto(c, W - ml, y_top - 46, dir_, fonte, 8.4 if fonte == "Mono" else 10.5, alpha=0.9, ancora="r")
+    c.setStrokeColor(colors.white)
+    c.setStrokeAlpha(0.22)
+    c.line(0, topo - 4 * alt_b, W, topo - 4 * alt_b)
+
+    # trilha da requisicao atravessando as camadas
+    xl = 318
+    c.setStrokeColor(colors.white)
+    c.setStrokeAlpha(0.95)
+    c.setLineWidth(1.3)
+    c.line(xl, topo + 12, xl, topo - 4 * alt_b + 14)
+    for i in range(4):
+        cy = topo - i * alt_b - 42
+        c.setFillColor(colors.white)
+        c.circle(xl, cy, 5.2, stroke=0, fill=1)
+        c.setFillColor(INDIGO)
+        c.circle(xl, cy, 2.1, stroke=0, fill=1)
+    # rotulo da requisicao
+    rot = "POST /tarefas"
+    lw = pdfmetrics.stringWidth(rot, "Mono-Bold", 8.4) + 18
+    c.setFillColor(colors.white)
+    c.setFillAlpha(1)
+    c.roundRect(xl - lw / 2, topo + 14, lw, 18, 9, stroke=0, fill=1)
+    _texto(c, xl, topo + 19.6, rot, "Mono-Bold", 8.4, cor=INDIGO_ESCURO, ancora="c")
+
+    # rodape da capa
+    base = 148
+    campos = [
+        [("Aluno", CFG["aluno"]), ("RM", CFG["rm"])],
+        [("Data", DATA_DOC), ("API", f"http://{CFG['ip_publico']}")],
+        [("Repositório", CFG["repo_url"].replace("https://", ""))],
+    ]
+    xs = [ml, ml + 210, ml + 210 + 150]
+    for x, grupo in zip(xs, campos):
+        yy = base - 90 + 56
+        for rotulo, valor in grupo:
+            if not valor:
+                continue
+            _texto(c, x, yy, rotulo, "Inter", 7.8, alpha=0.6)
+            _texto(c, x, yy - 13, valor, "Inter-Medium", 9.6)
+            yy -= 36
+    c.restoreState()
 
 
+def desenhar_miolo(c, doc):
+    W, H = A4
+    c.saveState()
+    # cabecalho
+    c.setFillColor(INDIGO)
+    c.rect(MARGEM_E, H - 1.45 * cm, 5, 5, stroke=0, fill=1)
+    c.setFillColor(TINTA)
+    c.setFont("Inter-SemiBold", 7.8)
+    c.drawString(MARGEM_E + 11, H - 1.45 * cm - 0.5, "API de Tarefas")
+    sec = doc.secao_da_pagina(doc.page)
+    if sec:
+        c.setFillColor(MUTED)
+        c.setFont("Inter", 7.8)
+        c.drawRightString(W - MARGEM_D, H - 1.45 * cm - 0.5, sec)
+    # rodape
+    c.setStrokeColor(FIO)
+    c.setLineWidth(0.6)
+    c.line(MARGEM_E, 1.7 * cm, W - MARGEM_D, 1.7 * cm)
+    c.setFillColor(MUTED)
+    c.setFont("Inter", 7.8)
+    rm = f", RM {CFG['rm']}" if CFG["rm"] else ""
+    c.drawString(MARGEM_E, 1.2 * cm, f"{CFG['aluno']}{rm}")
+    c.setFillColor(TINTA)
+    c.setFont("Inter-SemiBold", 8.4)
+    c.drawRightString(W - MARGEM_D, 1.2 * cm, str(doc.page))
+    c.restoreState()
+
+
+class Doc(BaseDocTemplate):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self._ant = {"topo": {}, "fim": {}}
+        self._novo = {"topo": {}, "fim": {}}
+        self._cont = {}
+        self._n = 0
+
+    def beforePage(self):
+        if self.page == 1:
+            self._ant, self._novo = self._novo, {"topo": {}, "fim": {}}
+            self._n = 0
+        self._cont[self.page] = 0
+
+    def afterFlowable(self, f):
+        if isinstance(f, (Spacer, CondPageBreak, PageBreak, NextPageTemplate)):
+            return
+        self._cont[self.page] = self._cont.get(self.page, 0) + 1
+        if isinstance(f, SecaoH1) and f.numero:
+            rotulo = f"{f.numero}  {f.titulo}" if f.numero.isdigit() else f"Anexo {f.numero}  {f.titulo}"
+            if getattr(f, "y_abs", 0) + f.ALTURA >= A4[1] - self.topMargin - 36:
+                self._novo["topo"][self.page] = rotulo
+            self._novo["fim"][self.page] = rotulo
+        if isinstance(f, SecaoH1) and f.entrada:
+            self._n += 1
+            chave = f"sec{self._n}"
+            self.canv.bookmarkPage(chave)
+            self.canv.addOutlineEntry(f"{f.numero}. {f.titulo}", chave, 0, 0)
+            txt = f.texto_toc()
+            if not f.numero.isdigit():
+                txt = (f"<font name='Inter-SemiBold' color='{INDIGO_HEX}'>Anexo {e(f.numero)}</font>"
+                       f"&nbsp;&nbsp;{e(f.titulo)}")
+            self.notify("TOCEntry", (0, txt, self.page, chave))
+
+    def secao_da_pagina(self, pagina):
+        d = self._ant
+        if pagina in d["topo"]:
+            return d["topo"][pagina]
+        for p in range(pagina - 1, 0, -1):
+            if p in d["fim"]:
+                return d["fim"][p]
+        return ""
+
+
+def sumario():
+    toc = TableOfContents()
+    toc.rightColumnWidth = 30
+    toc.dotsMinLevel = -1
+    toc.levelStyles = [ParagraphStyle("toc0", fontName="Inter-Medium", fontSize=10, leading=14,
+                                      textColor=TINTA, rightIndent=0)]
+    toc.tableStyle = TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (-1, 0), (-1, -1), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 5.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5.5),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.45, FIO),
+    ])
+    return toc
+
+
+# --------------------------------------------------------------------------
+# Conteudo
+# --------------------------------------------------------------------------
 def conteudo():
     st = []
     az = {k: e(v) for k, v in AZ.items()}
 
     # 1 ---------------------------------------------------------------
-    st.append(P("1. Objetivo e checklist da atividade", "h1"))
+    st.append(P("1. Objetivo e itens da atividade", "h1"))
     st.append(P(
         "A atividade consiste em desenvolver uma API básica com banco de dados SQLite, "
         "hospedá-la de ponta a ponta na nuvem, compartilhar o código no GitHub e entregar a "
-        "documentação completa, com esquemas visuais, em Word ou PDF. O professor pediu quatro "
+        "documentação completa, com esquemas visuais, em PDF. O professor pediu quatro "
         "itens; a tabela indica onde cada um está neste documento."))
+    st += ficha([
+        ("Linguagem", "Python 3 e Flask"),
+        ("Banco de dados", "SQLite"),
+        ("Máquina virtual", f"{AZ['sku']}"),
+        ("Armazenamento", "Premium SSD 30 GiB"),
+    ])
     st += tabela([
         ["Item exigido", "Onde está neste documento"],
         ["1. Prints de tela", "Seção 8 (Evidências), com marca d'água de autoria"],
@@ -369,7 +966,7 @@ def conteudo():
         ["3. Link do repositório no Git", f"Capa e seção 11: {e(CFG['repo_url'])}"],
         ["4. Elementos de nuvem: armazenamento, VM (SKU) e linguagem de programação",
          "Seção 5 (e seção 3 para a linguagem)"],
-    ], [6.5 * cm, LARGURA - 6.5 * cm])
+    ], [7.0 * cm, LARGURA - 7.0 * cm])
 
     # 2 ---------------------------------------------------------------
     st.append(P("2. Visão geral e arquitetura", "h1"))
@@ -408,25 +1005,33 @@ def conteudo():
         ["Ubuntu Server 22.04 LTS", "Sistema operacional da VM", "Imagem oficial, suporte de longo prazo, apt para pacotes."],
         ["Git e GitHub", "Versionamento e entrega do código", "A VM clona o repositório para publicar a versão."],
         ["Azure CLI", "Criação da infraestrutura por comandos", "Processo repetível e documentado (infraestrutura como script)."],
-    ], [3.6 * cm, 5.2 * cm, LARGURA - 8.8 * cm])
+    ], [3.7 * cm, 5.3 * cm, LARGURA - 9.0 * cm], dividir=True)
 
     # 4 ---------------------------------------------------------------
     st.append(P("4. A API", "h1"))
     st.append(P("4.1 Rotas", "h2"))
+
+    def metodo(m):
+        cor = {"GET": VERDE, "POST": INDIGO, "PUT": AMBAR, "DELETE": VERMELHO}[m].hexval().replace("0x", "#")
+        return f"<font name='Mono-Bold' size='8' color='{cor}'>{m}</font>"
+
+    def rota(r):
+        return f"<font name='Mono' size='8'>{r}</font>"
+
     st += tabela([
         ["Método", "Rota", "Descrição", "Resposta"],
-        ["GET", "/", "Informações e lista de rotas", "200"],
-        ["GET", "/health", "Verifica a API e o acesso ao banco", "200"],
-        ["GET", "/tarefas", "Lista as tarefas (filtro opcional ?concluida=0 ou 1)", "200"],
-        ["GET", "/tarefas/&lt;id&gt;", "Busca uma tarefa pelo id", "200 ou 404"],
-        ["POST", "/tarefas", "Cria uma tarefa (campo titulo obrigatório)", "201 ou 400"],
-        ["PUT", "/tarefas/&lt;id&gt;", "Atualiza titulo, descricao e/ou concluida", "200, 400 ou 404"],
-        ["DELETE", "/tarefas/&lt;id&gt;", "Remove a tarefa", "204 ou 404"],
-    ], [2.0 * cm, 3.6 * cm, LARGURA - 8.6 * cm, 3.0 * cm])
+        [metodo("GET"), rota("/"), "Informações e lista de rotas", "200"],
+        [metodo("GET"), rota("/health"), "Verifica a API e o acesso ao banco", "200"],
+        [metodo("GET"), rota("/tarefas"), "Lista as tarefas (filtro opcional ?concluida=0 ou 1)", "200"],
+        [metodo("GET"), rota("/tarefas/&lt;id&gt;"), "Busca uma tarefa pelo id", "200 ou 404"],
+        [metodo("POST"), rota("/tarefas"), "Cria uma tarefa (campo titulo obrigatório)", "201 ou 400"],
+        [metodo("PUT"), rota("/tarefas/&lt;id&gt;"), "Atualiza titulo, descricao e/ou concluida", "200, 400 ou 404"],
+        [metodo("DELETE"), rota("/tarefas/&lt;id&gt;"), "Remove a tarefa", "204 ou 404"],
+    ], [2.2 * cm, 3.7 * cm, LARGURA - 8.9 * cm, 3.0 * cm], forte=False)
 
     st.append(P("4.2 Exemplos de uso", "h2"))
     st.append(P("Os comandos abaixo foram executados em teste local com o gunicorn. Na VM, troque "
-                "<font name='Courier'>127.0.0.1:5000</font> pelo IP público (porta 80)."))
+                "<font name='Courier'>127.0.0.1:5000</font> pelo IP público (porta 80).", "body_k"))
     st += codigo(
         "$ curl -X POST http://127.0.0.1:5000/tarefas -H 'Content-Type: application/json' \\\n"
         "       -d '{\"titulo\":\"Estudar Azure\",\"descricao\":\"VM e storage\"}'\n"
@@ -449,7 +1054,7 @@ def conteudo():
         "\n"
         "$ curl http://127.0.0.1:5000/tarefas/1\n"
         "HTTP 404\n"
-        "{\"erro\": \"tarefa nao encontrada\"}\n")
+        "{\"erro\": \"tarefa nao encontrada\"}\n", lang="term", titulo="terminal")
 
     st.append(P("4.3 Validação e erros", "h2"))
     st += tabela([
@@ -459,7 +1064,7 @@ def conteudo():
         ["concluida diferente de true ou false; descricao que não seja texto", "400"],
         ["Id inexistente em GET, PUT ou DELETE", "404"],
         ["Rota inexistente ou método não permitido", "404 ou 405, também em JSON"],
-    ], [LARGURA - 5.5 * cm, 5.5 * cm])
+    ], [LARGURA - 5.5 * cm, 5.5 * cm], forte=False)
 
     st.append(P("4.4 Cuidados de segurança no código", "h2"))
     st += bullets([
@@ -478,7 +1083,7 @@ def conteudo():
     st += tabela([
         ["Recurso Azure", "Configuração usada", "Função"],
         ["Grupo de recursos", f"{az['grupo_recursos']} (metadados em {az['regiao_grupo']}; recursos em {az['regiao']})", "Agrupa todos os recursos; apagar o grupo remove tudo."],
-        ["Máquina virtual", f"{az['vm_nome']} · SKU {az['sku']} · {az['vcpu']} vCPU · {az['ram']} de RAM · {az['imagem']}",
+        ["Máquina virtual", f"{az['vm_nome']}, SKU {az['sku']}, {az['vcpu']} vCPU, {az['ram']} de RAM, {az['imagem']}",
          "Executa o gunicorn, o Flask e o SQLite."],
         ["Armazenamento (disco gerenciado do SO)", az["disco"], "Guarda o sistema, o código, o ambiente Python e o arquivo do banco."],
         ["IP público", "SKU Standard (endereço estático)", "Endereço de acesso à API pela internet."],
@@ -488,16 +1093,25 @@ def conteudo():
 
     st.append(P("5.2 Máquina virtual e SKU", "h2"))
     st.append(P(
-        f"<b>SKU</b> é o código do produto que define o tamanho da máquina. Aqui foi usado "
-        f"<b>{az['sku']}</b>, que se lê assim: <i>Standard</i> (categoria padrão), <i>B</i> (série "
-        "burstable, de desempenho com picos), <i>2</i> (dois vCPUs), <i>a</i> (processador AMD), "
-        "<i>t</i> (tiny memory: a menor proporção de memória por vCPU), <i>s</i> (aceita discos Premium SSD) "
-        f"e <i>v2</i> (segunda geração da série). Esse tamanho oferece {az['vcpu']} vCPUs e {az['ram']} de memória."))
-    st.append(P(
-        "O tamanho inicialmente planejado era o Standard_B1s em Brazil South, mas a assinatura usada "
-        "retornou o erro SkuNotAvailable (restrição de capacidade) para ele nessa região. Por isso a VM "
-        f"foi criada em <b>{az['regiao']}</b>, com o {az['sku']}. O grupo de recursos continua com os "
-        f"metadados em {az['regiao_grupo']}, o que não afeta o funcionamento."))
+        f"<b>SKU</b> é o código do produto que define o tamanho da máquina. O usado aqui, "
+        f"<b>{az['sku']}</b>, se lê assim:"))
+    st.append(SkuDecoder([
+        ("Standard", "categoria padrão"),
+        ("B", "série burstable, com picos de desempenho"),
+        ("2", "dois vCPUs"),
+        ("a", "processador AMD"),
+        ("t", "tiny memory, pouca memória por vCPU"),
+        ("s", "aceita discos Premium SSD"),
+        ("v2", "segunda geração da série"),
+    ]))
+    st.append(Spacer(1, 6))
+    st.append(P(f"Esse tamanho oferece {az['vcpu']} vCPUs e {az['ram']} de memória."))
+    st += callout(
+        "Por que Canada Central e não Brazil South",
+        "O plano inicial era o Standard_B1s em Brazil South, mas a assinatura usada retornou o erro "
+        "SkuNotAvailable (restrição de capacidade) para ele nessa região. Por isso a VM foi criada em "
+        f"<b>{az['regiao']}</b>, com o {az['sku']}. O grupo de recursos continua com os metadados em "
+        f"{az['regiao_grupo']}, o que não afeta o funcionamento.", tom="aviso")
     st.append(P(
         "A série B acumula créditos de CPU enquanto a VM trabalha abaixo do seu desempenho base e pode "
         "usar até 100% da vCPU em momentos de pico. Isso combina com uma API de poucas requisições, que "
@@ -509,10 +1123,10 @@ def conteudo():
 
     st.append(P("5.3 Armazenamento", "h2"))
     st += bullets([
-        f"<b>Disco do sistema operacional</b>: disco gerenciado {az['disco']}. O tipo Premium SSD foi o padrão sugerido pelo portal para este tamanho "
-        "(a letra <i>s</i> do SKU indica suporte a discos Premium). A redundância é local (LRS), com três "
-        "cópias dentro do mesmo datacenter. Para reduzir custo seria possível trocar para Standard SSD, que "
-        "também atenderia a uma carga leve como esta.",
+        f"<b>Disco do sistema operacional</b>: disco gerenciado {az['disco']}. O tipo Premium SSD foi o "
+        "padrão sugerido pelo portal para este tamanho (a letra <i>s</i> do SKU indica suporte a discos "
+        "Premium). A redundância é local (LRS), com três cópias dentro do mesmo datacenter. Para reduzir "
+        "custo seria possível trocar para Standard SSD, que também atenderia a uma carga leve como esta.",
         "<b>Onde fica o banco</b>: o arquivo <font name='Courier'>/var/lib/api-tarefas/tarefas.db</font> "
         "está nesse disco persistente. A VM também costuma ter um disco temporário local, que "
         "<b>não</b> é persistente e por isso não é usado para o banco.",
@@ -535,11 +1149,11 @@ def conteudo():
         "deveria passar por HTTPS (seção 10)."))
 
     st.append(P("5.5 Custos e limpeza", "h2"))
-    st.append(P(
+    st += callout(
+        "Apague tudo depois da avaliação",
         "Uma VM desalocada deixa de cobrar computação, mas o disco e o IP público continuam sendo "
-        "cobrados. Para encerrar tudo após a avaliação, o comando abaixo remove o grupo de recursos "
-        "inteiro:"))
-    st += codigo(f"az group delete --name {AZ['grupo_recursos']} --yes --no-wait")
+        "cobrados. Para encerrar tudo, o comando abaixo remove o grupo de recursos inteiro.", tom="aviso")
+    st += codigo(f"az group delete --name {AZ['grupo_recursos']} --yes --no-wait", lang="sh", titulo="Azure CLI")
 
     # 6 ---------------------------------------------------------------
     st.append(P("6. Banco de dados SQLite", "h1"))
@@ -547,7 +1161,7 @@ def conteudo():
         "O SQLite é um banco relacional embutido: todo o banco é um único arquivo, acessado pelo módulo "
         "sqlite3 do Python, sem processo de servidor. A tabela é criada automaticamente na "
         "primeira execução da aplicação (CREATE TABLE IF NOT EXISTS)."))
-    st.append(figura(os.path.join(DIAG, "03-modelo-dados.png"), "Modelo de dados: tabela tarefas.", alt_max=8 * cm))
+    st.append(figura(os.path.join(DIAG, "03-modelo-dados.png"), "Modelo de dados: tabela tarefas.", alt_max=7 * cm))
     st += codigo(
         "CREATE TABLE IF NOT EXISTS tarefas (\n"
         "    id            INTEGER PRIMARY KEY AUTOINCREMENT,\n"
@@ -556,7 +1170,7 @@ def conteudo():
         "    concluida     INTEGER NOT NULL DEFAULT 0,\n"
         "    criada_em     TEXT    NOT NULL,\n"
         "    atualizada_em TEXT    NOT NULL\n"
-        ");")
+        ");", lang="txt", titulo="SQL")
     st += bullets([
         "<b>Modo WAL</b> (PRAGMA journal_mode=WAL): permite que leituras continuem enquanto ocorre uma "
         "gravação, o que ajuda com os 2 workers do gunicorn.",
@@ -588,13 +1202,14 @@ def conteudo():
         f"   --image Ubuntu2204 --size {AZ['sku']} --admin-username azureuser --generate-ssh-keys \\\n"
         "   --storage-sku Premium_LRS --os-disk-size-gb 30 --public-ip-sku Standard\n"
         f"az vm open-port --resource-group {AZ['grupo_recursos']} --name {AZ['vm_nome']} --port 80 --priority 900\n"
-        f"az vm show -d --resource-group {AZ['grupo_recursos']} --name {AZ['vm_nome']} --query publicIps -o tsv")
+        f"az vm show -d --resource-group {AZ['grupo_recursos']} --name {AZ['vm_nome']} --query publicIps -o tsv",
+        lang="sh", titulo="Azure CLI")
     st.append(P("7.2 Configuração da VM (deploy/setup-vm.sh)", "h2"))
     st.append(P(
         "Depois de conectar com <font name='Courier'>ssh azureuser@IP_PUBLICO</font>, o script instala "
         "python3-venv e git, clona o repositório em /opt/api-tarefas, cria o ambiente virtual, instala "
-        "as dependências do requirements.txt, registra o serviço no systemd e testa o /health."))
-    st += codigo(f"./setup-vm.sh {CFG['repo_url']}.git")
+        "as dependências do requirements.txt, registra o serviço no systemd e testa o /health.", "body_k"))
+    st += codigo(f"./setup-vm.sh {CFG['repo_url']}.git", lang="sh", titulo="dentro da VM")
     st.append(P("7.3 Serviço systemd (deploy/api-tarefas.service)", "h2"))
     st += tabela([
         ["Diretiva", "Efeito"],
@@ -611,26 +1226,25 @@ def conteudo():
     st += codigo(
         "cd /opt/api-tarefas && git pull\n"
         ".venv/bin/pip install -r requirements.txt\n"
-        "sudo systemctl restart api-tarefas")
+        "sudo systemctl restart api-tarefas", lang="sh", titulo="dentro da VM")
     return st
 
 
 def segunda_parte():
     st = []
-    az = {k: e(v) for k, v in AZ.items()}
     st.append(P("9. Testes", "h1"))
     st.append(P("9.1 Testes automatizados", "h2"))
     st.append(P(
         "O arquivo tests/test_api.py usa unittest e o cliente de testes do Flask, com banco temporário. "
-        "Os 5 testes passaram na execução local (python -m unittest discover -s tests -v)."))
+        "Os 5 testes passaram na execução local (python -m unittest discover -s tests -v).", "body_k"))
     st += tabela([
         ["Teste", "O que verifica"],
-        ["test_health", "A rota /health responde 200 e acessa o banco."],
-        ["test_crud_completo", "Fluxo POST, GET, PUT (concluida), filtro ?concluida=1, DELETE e GET final com 404."],
-        ["test_validacao", "400 para corpo vazio, título em branco, título com 121 caracteres e corpo que não é JSON."],
-        ["test_sql_injection_nao_funciona", "Um título com SQL malicioso é gravado como texto e a tabela continua existindo."],
-        ["test_404", "Rota inexistente e PUT em id inexistente retornam 404."],
-    ], [5.2 * cm, LARGURA - 5.2 * cm])
+        [f"<font name='Mono' size='7.8'>test_health</font>", "A rota /health responde 200 e acessa o banco."],
+        [f"<font name='Mono' size='7.8'>test_crud_completo</font>", "Fluxo POST, GET, PUT (concluida), filtro ?concluida=1, DELETE e GET final com 404."],
+        [f"<font name='Mono' size='7.8'>test_validacao</font>", "400 para corpo vazio, título em branco, título com 121 caracteres e corpo que não é JSON."],
+        [f"<font name='Mono' size='7.8'>test_sql_injection_nao_funciona</font>", "Um título com SQL malicioso é gravado como texto e a tabela continua existindo."],
+        [f"<font name='Mono' size='7.8'>test_404</font>", "Rota inexistente e PUT em id inexistente retornam 404."],
+    ], [6.0 * cm, LARGURA - 6.0 * cm], forte=False)
     st.append(P("9.2 Teste na nuvem", "h2"))
     st.append(P(
         "Depois do deploy, os testes manuais são feitos de fora da VM, apontando para o IP público "
@@ -646,26 +1260,19 @@ def segunda_parte():
         ["Banco SQLite", "Uma gravação por vez; arquivo em um único disco", "Backup por snapshot ou cópia para Blob; migrar para PostgreSQL/Azure SQL se crescer."],
         ["Disponibilidade", "Uma única VM", "Zonas de disponibilidade e balanceador, o que exigiria banco em serviço gerenciado."],
         ["Entrega do código", "Deploy manual com git pull", "Pipeline de CI/CD (GitHub Actions) com testes automáticos antes de publicar."],
-    ], [3.4 * cm, 5.4 * cm, LARGURA - 8.8 * cm])
+    ], [3.4 * cm, 5.4 * cm, LARGURA - 8.8 * cm], dividir=True)
 
     st.append(P("11. Repositório e referências", "h1"))
-    st.append(P(f"Repositório no GitHub: <b>{e(CFG['repo_url'])}</b>"))
+    st.append(P(f"Repositório no GitHub: <b>{e(CFG['repo_url'])}</b>", "body_k"))
     st += codigo(
         "GS-cloud/\n"
         "  app.py                  API Flask + SQLite\n"
         "  requirements.txt        Flask e gunicorn\n"
         "  README.md               Resumo, rotas e como rodar\n"
         "  tests/test_api.py       Testes automatizados\n"
-        "  deploy/\n"
-        "    azure-cli.sh          Cria a infraestrutura na Azure\n"
-        "    setup-vm.sh           Configura a VM (rodar dentro dela)\n"
-        "    api-tarefas.service   Unidade systemd\n"
-        "  docs/\n"
-        "    gerar_diagramas.py    Gera os diagramas\n"
-        "    gerar_pdf.py          Gera este PDF\n"
-        "    config.json           Dados do aluno, repositório e configuração da Azure\n"
-        "    diagramas/            Imagens dos esquemas visuais\n"
-        "    prints/               Prints de evidência (só na entrega do PDF)")
+        "  docs/                   Scripts, diagramas e fontes que geram este PDF\n"
+        "  deploy/                 Scripts de infraestrutura e o serviço systemd",
+        lang="txt", titulo="estrutura do repositório")
     st.append(P("Referências", "h2"))
     st += bullets([
         "Microsoft Learn - Série Bv1 de VMs: https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/general-purpose/bv1-series",
@@ -678,13 +1285,12 @@ def segunda_parte():
     st.append(PageBreak())
     st.append(P("Anexo A - Código-fonte completo: app.py", "h1"))
     with open(os.path.join(ROOT, "app.py"), encoding="utf-8") as f:
-        st += codigo(f.read())
+        st += codigo(f.read(), lang="py", titulo="app.py", numeros=True)
     st.append(PageBreak())
     st.append(P("Anexo B - Arquivos de deploy", "h1"))
-    for nome in ("azure-cli.sh", "setup-vm.sh", "api-tarefas.service"):
-        st.append(P(f"deploy/{nome}", "h2"))
+    for nome, lang in (("azure-cli.sh", "sh"), ("setup-vm.sh", "sh"), ("api-tarefas.service", "ini")):
         with open(os.path.join(ROOT, "deploy", nome), encoding="utf-8") as f:
-            st += codigo(f.read())
+            st += codigo(f.read(), lang=lang, titulo=f"deploy/{nome}", numeros=True)
     return st
 
 
@@ -692,50 +1298,49 @@ def segunda_parte():
 # Montagem
 # --------------------------------------------------------------------------
 def main():
-    doc = BaseDocTemplate(
-        SAIDA, pagesize=A4, leftMargin=2 * cm, rightMargin=2 * cm,
-        topMargin=2 * cm, bottomMargin=2.2 * cm,
+    doc = Doc(
+        SAIDA, pagesize=A4, leftMargin=MARGEM_E, rightMargin=MARGEM_D,
+        topMargin=2.5 * cm, bottomMargin=2.3 * cm,
         title="Documentação - API de Tarefas (Flask + SQLite na Azure)",
-        author=CFG["aluno"],
+        author=CFG["aluno"], subject=CFG["disciplina"],
     )
-    quadro = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="f")
+    quadro = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="f",
+                   leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
     doc.addPageTemplates([
-        PageTemplate(id="capa", frames=[quadro]),
-        PageTemplate(id="miolo", frames=[quadro], onPage=rodape),
+        PageTemplate(id="capa", frames=[quadro], onPage=desenhar_capa),
+        PageTemplate(id="miolo", frames=[quadro], onPage=desenhar_miolo),
     ])
 
-    # Evidencias precisam ser desenhadas com os JPEGs temporarios ainda presentes:
-    # por isso o PDF inteiro e construido dentro do bloco do diretorio temporario.
-    from reportlab.platypus import NextPageTemplate
-
     with tempfile.TemporaryDirectory() as tmp:
-        st_cap = capa()
-        st_cap.insert(-1, NextPageTemplate("miolo"))
-        story = st_cap + conteudo()
+        story = [Spacer(1, 1), NextPageTemplate("miolo"), PageBreak()]
+        story.append(SecaoH1("", "Sumário", entrada=False))
+        story.append(Spacer(1, 4))
+        story.append(sumario())
+        story += conteudo()
 
         story.append(P("8. Evidências (prints de tela)", "h1"))
         story.append(P(
             "Cada print abaixo recebe, automaticamente, a marca d'água com o nome do aluno e a expressão "
             "\"Evidência Original\". Os arquivos originais ficam intactos em docs/prints."))
         encontrados = 0
-        for ident, titulo, o_que in EVIDENCIAS:
-            bloco = [P(f"8.{int(ident)} {e(titulo)}", "h2")]
+        for ident, titulo, comprova in EVIDENCIAS:
             arquivos = achar_prints(ident)
             if not arquivos:
-                bloco += quadro_pendente_itens(f"{ident}-nome-do-print.png", o_que)
                 PENDENCIAS.append(f"print {ident} - {titulo}")
-            else:
-                for i, arq in enumerate(arquivos):
-                    encontrados += 1
-                    data_txt = CFG["data"] or datetime.date.fromtimestamp(
-                        os.path.getmtime(arq)).strftime("%d/%m/%Y")
-                    destino = os.path.join(tmp, f"{ident}-{i}.jpg")
-                    aplicar_marca_dagua(arq, destino, data_txt)
-                    bloco += figura_itens(destino, e(titulo) + ".", alt_max=8.6 * cm)
-            story.append(KeepTogether(bloco))
+                story.append(CartaoEvidencia(ident, titulo, comprova, [],
+                                             pendente_txt=f"Salve em docs/prints/{ident}-nome.png e gere o PDF de novo."))
+                continue
+            marcadas = []
+            for i, arq in enumerate(arquivos):
+                encontrados += 1
+                destino = os.path.join(tmp, f"{ident}-{i}.jpg")
+                aplicar_marca_dagua(arq, destino)
+                marcadas.append(destino)
+            alt = 7.8 * cm if len(marcadas) == 1 else 6.4 * cm
+            story.append(CartaoEvidencia(ident, titulo, comprova, marcadas, alt_max=alt))
 
         story += segunda_parte()
-        doc.build(story)
+        doc.multiBuild(story)
 
     for chave, valor in (("repo_url", CFG["repo_url"]), ("ip_publico", CFG["ip_publico"])):
         if "SEU_USUARIO" in valor or "IP_PUBLICO_DA_VM" in valor:
